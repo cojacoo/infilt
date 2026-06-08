@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "infilt"
+version = "0.1.0"
+description = "Tension infiltrometer analysis — mini-disk and hood, unified"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+plot = ["plotly>=5.0"]
+app  = ["streamlit>=1.30", "pandas>=2.0", "plotly>=5.0",
+        "reportlab>=4.0", "kaleido>=0.2"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["infilt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
