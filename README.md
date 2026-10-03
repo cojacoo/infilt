@@ -94,11 +94,21 @@ I(t) = C₁ · √t + C₂ · t
 Three fitting methods: **OLS** (β = 0.5 fixed), **Su method** (free β), and
 **Mittag-Leffler generalisation** (Su 2025, Guo et al. 2026) for structured/macroporous soils.
 
-K(h₀) = C₂ / A₂, where A₂ is the geometry correction of Zhang (1997) for n ≥ 1.35,
-or Dohnal et al. (2010) for n < 1.35.
+K(h₀) = C₂ / A₂. A₂ corrects for 3-D flow below the small disk; the formula is chosen
+automatically from the van Genuchten n in use:
+
+```
+Zhang (1997),        n ≥ 1.35:  A₂ = 11.65 (n^0.1 − 1) exp[d (n − 1.9) α h₀] / (α r₀)^0.91
+                                 d = 7.5 (n < 1.9), 2.92 (n ≥ 1.9)
+Dohnal et al. (2010), n < 1.35:  A₂ = 11.65 (n^0.82 − 1) exp[34.65 (n − 1.19) α h₀] / (α r₀)^0.60
+```
+
+With the default Carsel & Parrish (1988) classes, Dohnal applies to clay loam, silty clay loam,
+sandy clay, silty clay and clay. The results table lists formula and α, n used per run.
 A₂ is calibrated for the Philip C₂, so K from the Su / Mittag-Leffler gravity terms is
 indicative only. Su needs ≥ 5 and ML ≥ 6 readings per run (flag `FEW_PTS` otherwise).
-van Genuchten parameters (α, n) from ROSETTA (Schaap et al. 2001 in Dohnal et al. 2010) by texture class or manual entry.
+van Genuchten parameters (α, n) by texture class from Carsel & Parrish (1988, default, as in the
+METER manual) or ROSETTA H1 (Schaap et al. 2001, in Dohnal et al. 2010), or manual entry.
 
 ### K(h) model fitting and Ksat
 
@@ -123,6 +133,7 @@ Kosugi Ks is reported separately.
 - Wooding, R.A. (1968). Steady infiltration from a shallow circular pond. *Water Resources Research*, 4(6), 1259–1273. <https://doi.org/10.1029/WR004i006p01259>
 - Su, L. (2025). A generalised infiltration model based on the Mittag-Leffler function. *Scientific Reports*, 15, 20396. <https://doi.org/10.1038/s41598-025-20396-x>
 - Guo, X. et al. (2026). A Mittag-Leffler infiltration model for structured soils. *Journal of Hydrology*, 674, 135443. <https://doi.org/10.1016/j.jhydrol.2025.135443>
+- Carsel, R.F. & Parrish, R.S. (1988). Developing joint probability distributions of soil water retention characteristics. *Water Resources Research*, 24(5), 755–769. <https://doi.org/10.1029/WR024i005p00755>
 - Schaap, M.G., Leij, F.J., & van Genuchten, M.Th. (2001). ROSETTA: a computer program for estimating soil hydraulic parameters with hierarchical pedotransfer functions. *Journal of Hydrology*, 251(3–4), 163–176. <https://doi.org/10.1016/S0022-1694(01)00466-8>
 
 ---

@@ -489,3 +489,15 @@ def test_few_points_skip_su_ml():
     assert r.K_ols_cm_s > 0
     assert r.K_su_cm_s == 0.0 and r.K_ml_cm_s is None
     assert any(f.startswith('FEW_PTS') for f in r.flags)
+
+
+def test_figure_mixed_hood_minidisk_same_suction():
+    """Hood + mini-disk at the same suction: separate panels, distinct K(h) points."""
+    from infilt import MINIDISK_STUDENT
+    with warnings.catch_warnings(record=True): warnings.simplefilter('always')
+    runs = TestCampaignLevel()._runs() + _md_runs([(30, .01)], texture='clay_loam')
+    fig = Campaign(runs).run().figure()
+    assert {'xaxis', 'xaxis2', 'xaxis3'} <= set(fig.layout.to_plotly_json())
+    pts = [t for t in fig.data if t.xaxis == 'x3' and t.mode == 'markers' and len(t.x) == 1
+           and t.x[0] == 3.0]
+    assert {t.marker.symbol for t in pts} == {'circle', 'square'}

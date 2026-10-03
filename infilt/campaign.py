@@ -68,6 +68,17 @@ def _wooding_inversion(
 # K(h) fits dataclass
 # ---------------------------------------------------------------------------
 
+def _valid_for_kh(r: InfiltrationResult) -> bool:
+    """Run enters the K(h) fits."""
+    return (bool(r.K_primary_cm_s) and r.K_primary_cm_s > 0
+            and 'NEGATIVE_K' not in r.flags
+            and 'NO_WOODING_K' not in r.flags)
+
+
+_A2_SHORT = {'zhang1997': 'Zhang', 'dohnal2010': 'Dohnal'}
+_A2_LONG  = {'zhang1997': 'Zhang (1997), n ≥ 1.35',
+             'dohnal2010': 'Dohnal et al. (2010), n < 1.35'}
+
 # 3-parameter K(h) models need residual degrees of freedom
 MIN_TENSIONS_3P = 4
 
@@ -134,7 +145,7 @@ class CampaignResult:
             '═' * width,
             (f'  {"h₀[cm]":>7}  {"signal":>7}  {"suct[mm]":>8}'
              f'  {"Wooding":>8}  {"OLS":>8}  {"Su":>8}  {"ML":>8}'
-             f'  {"β_Su":>6}  {"R²_OLS":>7}  {"@SS%":>5}  flags'),
+             f'  {"β_Su":>6}  {"R²_OLS":>7}  {"@SS%":>5}  {"A₂":>6}  flags'),
             (f'  {"":>7}  {"":>7}  {"":>8}'
              f'  {"[mm/h]":>8}  {"[mm/h]":>8}  {"[mm/h]":>8}  {"[mm/h]":>8}'
              f'  {"":>6}  {"":>7}  {"":>6}'),
@@ -151,15 +162,24 @@ class CampaignResult:
                 f'  {_kf(res.K_ols_cm_s)}'
                 f'  {_kf(res.K_su_cm_s)}'
                 f'  {_kf(res.K_ml_cm_s)}'
-                f'  {res.su.beta:>6.3f}  {res.ols.r2:>7.4f}  {conv_str}  '
+                f'  {res.su.beta:>6.3f}  {res.ols.r2:>7.4f}  {conv_str}'
+                f'  {_A2_SHORT.get(res.fit_formula, "n/a"):>6}  '
                 + flag_str
             )
 
-        lines += [
-            '─' * width,
-            (f'  Philip A₂: first-pass VG α={self.alpha_fp:.4f} cm⁻¹'
-             f'  n={self.n_fp:.3f}'),
-        ]
+        lines.append('─' * width)
+        # VG params actually used for A₂ (texture / manual, or first-pass fit)
+        used = sorted({(r.fit_formula, r.alpha, r.n, r.soil_texture)
+                       for r in self.results if r.alpha is not None},
+                      key=str)
+        for formula, a, n, tex in used:
+            src = (f'texture {tex}' if tex
+                   else f'first-pass VG fit of K(h)' if (a, n) == (self.alpha_fp, self.n_fp)
+                   else 'manual')
+            lines.append(
+                f'  Philip A₂: {_A2_LONG.get(formula, formula)}'
+                f' — VG α={a:.4f} cm⁻¹  n={n:.3f}  ({src})'
+            )
 
         level_with_ss = [r for r in self.results
                          if r.signal_type == 'level' and r.ss is not None]
@@ -241,12 +261,14 @@ class CampaignResult:
 
     def figure(self):
         """
-        Plotly figure with two panels.
+        Plotly figure, one panel per instrument type plus K(h).
 
-        Panel A : raw signals per tension
-          - level runs : infiltration rate q [mm/h] vs time [min]
-          - volume runs: cumulative I [cm] vs √t [min^½] with OLS fit
-        Panel B : K(h) curves — Gardner / Mualem-VG / Mualem-Kosugi
+        Hood panel     : infiltration rate q [mm/h] vs time [min] with
+                         steady-state band and Wooding K per tension.
+        Mini-disk panel: cumulative I [mm] vs √t [s^½] with Philip OLS fit
+                         and K(h₀) (Zhang / Dohnal A₂) per tension.
+        K(h) panel     : primary K per tension, Gardner / Mualem-VG /
+                         Mualem-Kosugi curves, Ksat at h = 0.
         """
         try:
             import plotly.graph_objects as go
@@ -259,30 +281,49 @@ class CampaignResult:
             '#9467bd', '#8c564b', '#e377c2', '#7f7f7f',
         ]
 
-        fig = make_subplots(rows=1, cols=2,
-                            subplot_titles=(
-                                'A)  Raw signals per tension',
-                                'B)  K(h) — Gardner / Mualem-VG / Mualem-Kosugi',
-                            ))
-        # Explicit domains: A 0–40 %, gap 40–65 %, B 65–90 %, legend 91–100 %
-        fig.update_xaxes(domain=[0.00, 0.40], row=1, col=1)
-        fig.update_xaxes(domain=[0.65, 0.90], row=1, col=2)
+        sorted_res = sorted(self.results, key=lambda r: r.h0_cm)
+        has_level  = any(r.signal_type == 'level'  for r in sorted_res)
+        has_volume = any(r.signal_type == 'volume' for r in sorted_res)
+
+        titles, col_of = [], {}
+        if has_level:
+            col_of['level'] = len(titles) + 1
+            titles.append('Hood: infiltration rate q(t)')
+        if has_volume:
+            col_of['volume'] = len(titles) + 1
+            titles.append('Mini-disk: cumulative I(√t), Philip fit')
+        col_kh = len(titles) + 1
+        titles.append('K(h) — Gardner / Mualem-VG / Mualem-Kosugi')
+        titles = [f'{chr(65 + i)})  {t}' for i, t in enumerate(titles)]
+
+        fig = make_subplots(rows=1, cols=len(titles), subplot_titles=titles)
+        # Explicit domains leave room right of the hood panel for the q_ss
+        # annotations; legend sits at 90–100 %.
+        domains = {
+            1: [[0.00, 0.62]],
+            2: [[0.00, 0.40], [0.62, 0.88]],
+            3: [[0.00, 0.26], [0.39, 0.61], [0.69, 0.88]],
+        }[len(titles)]
+        for c, dom in enumerate(domains, start=1):
+            fig.update_xaxes(domain=dom, row=1, col=c)
         fig.update_layout(
             template='none',
             title_text=f'Tension Infiltrometer Campaign — {self.site or ""}',
             title_font_size=14,
             height=500,
-            legend=dict(orientation='v', x=0.91, y=1.0),
+            legend=dict(orientation='v', x=0.90, y=1.0),
         )
 
-        sorted_res = sorted(self.results, key=lambda r: r.h0_cm)
+        def _label(res) -> str:
+            return f'{res.suction_mm:g} mm · {"hood" if res.signal_type == "level" else "disk"}'
 
-        # ── Panel A ────────────────────────────────────────────────────────
+        # ── Raw-data panels ────────────────────────────────────────────────
         for i, res in enumerate(sorted_res):
             col = PALETTE[i % len(PALETTE)]
-            label = f'{res.suction_mm:.0f} mm ({res.signal_type})'
+            label = _label(res)
 
             if res.signal_type == 'level' and res.rate_cm_s is not None:
+                c = col_of['level']
                 t_min = res.time_s / 60.0
                 q_mmh = res.rate_cm_s * 36_000
                 fig.add_trace(
@@ -292,7 +333,7 @@ class CampaignResult:
                         line=dict(color=col, width=2),
                         legendgroup=label,
                     ),
-                    row=1, col=1,
+                    row=1, col=c,
                 )
                 if res.ss is not None and res.ss.mask.any():
                     fig.add_trace(
@@ -305,7 +346,7 @@ class CampaignResult:
                             legendgroup=label,
                             showlegend=False,
                         ),
-                        row=1, col=1,
+                        row=1, col=c,
                     )
                 if res.ss is not None:
                     q_ss_mmh = res.ss.q_ss * 36_000
@@ -323,50 +364,58 @@ class CampaignResult:
                         y1=q_ss_mmh + se_mmh,
                         fillcolor=col, opacity=0.12,
                         line_width=0,
-                        row=1, col=1,
+                        row=1, col=c,
                     )
                     fig.add_hline(
                         y=q_ss_mmh,
                         line_dash='dash', line_color=col,
-                        opacity=0.7, row=1, col=1,
+                        opacity=0.7, row=1, col=c,
                         annotation_text=ann,
                         annotation_font_size=9,
                         annotation_position='right',
                     )
+
             elif res.signal_type == 'volume' and res.I_cm_obs is not None:
-                sqt = np.sqrt(np.maximum(res.time_s, 0)) / 60.0
+                c = col_of['volume']
+                sqt = np.sqrt(np.maximum(res.time_s, 0))      # √s
                 fig.add_trace(
                     go.Scatter(
-                        x=sqt, y=res.I_cm_obs,
+                        x=sqt, y=res.I_cm_obs * 10,
                         mode='markers', name=label,
                         marker=dict(color=col, size=8, symbol='square'),
                         legendgroup=label,
-                        yaxis='y2',
                     ),
-                    row=1, col=1,
+                    row=1, col=c,
                 )
-                if res.ols.I_fit is not None:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=sqt, y=res.ols.I_fit,
-                            mode='lines', name=f'{label} OLS fit',
-                            line=dict(color=col, width=1.5, dash='dash'),
-                            legendgroup=label, showlegend=False,
-                            yaxis='y2',
-                        ),
-                        row=1, col=1,
-                    )
+                fig.add_trace(
+                    go.Scatter(
+                        x=sqt, y=res.ols.I_fit * 10,
+                        mode='lines', name=f'{label} Philip fit',
+                        line=dict(color=col, width=1.5, dash='dash'),
+                        legendgroup=label, showlegend=False,
+                    ),
+                    row=1, col=c,
+                )
+                formula = {'zhang1997': 'Zhang', 'dohnal2010': 'Dohnal'}.get(
+                    res.fit_formula, res.fit_formula)
+                K_txt = (f'K = {res.K_ols_mmh:.2f} mm/h ({formula})'
+                         if res.K_ols_cm_s > 0 else 'K n/a')
+                fig.add_trace(
+                    go.Scatter(
+                        x=[sqt[-1]], y=[res.ols.I_fit[-1] * 10],
+                        mode='text', text=[f'{K_txt}<br>R² = {res.ols.r2:.3f}'],
+                        textposition='top left', textfont=dict(size=9, color=col),
+                        legendgroup=label, showlegend=False, hoverinfo='skip',
+                    ),
+                    row=1, col=c,
+                )
 
-        has_level  = any(r.signal_type == 'level'  for r in sorted_res)
-        has_volume = any(r.signal_type == 'volume' for r in sorted_res)
-        if has_level and has_volume:
-            x_label_a = 'Time [min]  (level)  /  √t [min^½]  (volume)'
-        elif has_volume:
-            x_label_a = '√t [min^½]'
-        else:
-            x_label_a = 'Time [min]'
-        fig.update_xaxes(title_text=x_label_a, row=1, col=1)
-        fig.update_yaxes(title_text='Rate q [mm/h]', row=1, col=1)
+        if has_level:
+            fig.update_xaxes(title_text='Time [min]', row=1, col=col_of['level'])
+            fig.update_yaxes(title_text='Rate q [mm/h]', row=1, col=col_of['level'])
+        if has_volume:
+            fig.update_xaxes(title_text='√t [s^½]', row=1, col=col_of['volume'])
+            fig.update_yaxes(title_text='Cumulative I [mm]', row=1, col=col_of['volume'])
 
         # ── Panel B ────────────────────────────────────────────────────────
         if self.kh is not None and self.kh.h_plot is not None:
@@ -377,7 +426,7 @@ class CampaignResult:
                     mode='lines', name=f'Gardner  αG={self.kh.aG:.3f}',
                     line=dict(color='#8c564b', width=2),
                 ),
-                row=1, col=2,
+                row=1, col=col_kh,
             )
             if self.kh.K_vg_plot is not None:
                 fig.add_trace(
@@ -387,7 +436,7 @@ class CampaignResult:
                         name=f'Mualem-VG  α={self.kh.alpha_vg:.3f}  n={self.kh.n_vg:.2f}',
                         line=dict(color='#ff7f0e', width=2, dash='dash'),
                     ),
-                    row=1, col=2,
+                    row=1, col=col_kh,
                 )
             if self.kh.K_ko_plot is not None:
                 fig.add_trace(
@@ -397,22 +446,20 @@ class CampaignResult:
                         name=f'Mualem-Ko  hm={self.kh.hm_ko:.2f}  σ={self.kh.sigma_ko:.2f}',
                         line=dict(color='#9467bd', width=2, dash='dot'),
                     ),
-                    row=1, col=2,
+                    row=1, col=col_kh,
                 )
 
-        # Same color per tension as Panel A (sorted_res order)
-        color_by_h0 = {r.h0_cm: PALETTE[i % len(PALETTE)]
-                       for i, r in enumerate(sorted_res)}
-
-        for h0, K in zip(self.h_arr, self.K_arr):
-            res = next((r for r in self.results
-                        if abs(r.h0_cm - h0) < 0.01), None)
-            col = color_by_h0.get(h0, PALETTE[0])
-            sym = 'circle' if (res and res.signal_type == 'level') else 'square'
-            lbl = f'{abs(h0)*10:.0f} mmWC'
+        # Same color per run as the raw-data panels (sorted_res order)
+        for i, res in enumerate(sorted_res):
+            if not _valid_for_kh(res):
+                continue
+            h0, K = res.h0_cm, res.K_primary_cm_s
+            col = PALETTE[i % len(PALETTE)]
+            sym = 'circle' if res.signal_type == 'level' else 'square'
+            lbl = _label(res)
             # σ_K = σ_q × (K/q_ss)  — Wooding inversion is linear in q_ss
             se_K_mmh = 0.0
-            if (res and res.ss and res.K_wooding_cm_s
+            if (res.ss and res.K_wooding_cm_s
                     and res.ss.q_ss > 0 and res.ss.q_ss_se > 0):
                 se_K_mmh = float(
                     res.ss.q_ss_se * 36_000
@@ -430,9 +477,9 @@ class CampaignResult:
                     ),
                     name=lbl,
                     legendgroup=lbl,
-                    showlegend=True,
+                    showlegend=False,       # entry already in raw-data panel
                 ),
-                row=1, col=2,
+                row=1, col=col_kh,
             )
 
         # Ksat marker at h=0 from Gardner and VG models
@@ -448,17 +495,17 @@ class CampaignResult:
                     mode='markers+text',
                     marker=dict(color='black', size=14, symbol='diamond'),
                     text=[f'Ksat≈{ks_mean:.1f}<br>[{ks_lo:.1f}–{ks_hi:.1f}]'],
-                    textposition='top right',
+                    textposition='middle right',
                     textfont=dict(size=9),
                     name=f'Ksat = {ks_mean:.1f} mm/h',
                     showlegend=True,
                 ),
-                row=1, col=2,
+                row=1, col=col_kh,
             )
 
         fig.update_xaxes(title_text='Suction |h₀| [cm]', range=[-0.05, None],
-                         row=1, col=2)
-        fig.update_yaxes(title_text='K(h₀) [mm/h]', type='log', row=1, col=2)
+                         row=1, col=col_kh)
+        fig.update_yaxes(title_text='K(h₀) [mm/h]', type='log', row=1, col=col_kh)
 
         return fig
 
@@ -671,9 +718,7 @@ class Campaign:
 
         # ── K(h) model fits ───────────────────────────────────────────────
         valid = [(r.h0_cm, r.K_primary_cm_s) for r in final_results
-                 if r.K_primary_cm_s and r.K_primary_cm_s > 0
-                 and 'NEGATIVE_K' not in r.flags
-                 and 'NO_WOODING_K' not in r.flags]
+                 if _valid_for_kh(r)]
 
         h_arr = np.array([h for h, _ in valid])
         K_arr = np.array([k for _, k in valid])

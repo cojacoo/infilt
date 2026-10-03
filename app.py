@@ -42,6 +42,8 @@ INSTRUMENT_PRESETS: dict[str, dict] = {
 
 SOIL_TEXTURES = list_textures()
 
+_A2_NAME = {'zhang1997': 'Zhang', 'dohnal2010': 'Dohnal'}
+
 FOOTER_LINE = FOOTER  # from infilt.methods
 
 # ---------------------------------------------------------------------------
@@ -145,6 +147,7 @@ def _generate_pdf(result, meta: dict, df: pd.DataFrame) -> bytes:
         _h('K_Su', '[mm/h]'),
         _h('R2', 'OLS'),
         _h('SS', '%'),
+        _h('A2', ''),
     ]]
     for r in sorted(result.results, key=lambda x: x.h0_cm):
         se_K = 0.0
@@ -161,10 +164,11 @@ def _generate_pdf(result, meta: dict, df: pd.DataFrame) -> bytes:
             f'{r.K_su_cm_s*36000:.2f}' if r.K_su_cm_s else '—',
             f'{r.ols.r2:.4f}',
             f'{r.ss.conv_frac:.0%}' if r.ss else '—',
+            _A2_NAME.get(r.fit_formula, '—'),
         ])
     elems.append(Table(comb_rows, style=ts,
-                       colWidths=[14*mm, 12*mm, 18*mm, 15*mm,
-                                  18*mm, 14*mm, 17*mm, 17*mm, 14*mm, 11*mm]))
+                       colWidths=[13*mm, 11*mm, 16*mm, 14*mm,
+                                  16*mm, 13*mm, 16*mm, 16*mm, 13*mm, 10*mm, 14*mm]))
     elems.append(Spacer(1, 2*mm))
 
     # ── K(h) model fits — list ────────────────────────────────────────────────
@@ -244,6 +248,9 @@ def _append_to_log(result, meta: dict) -> None:
             'K_ols_mmh':        round(r.K_ols_cm_s * 36000, 3),
             'K_su_mmh':         round(r.K_su_cm_s * 36000, 3) if r.K_su_cm_s else None,
             'r2_ols':           round(r.ols.r2, 4),
+            'A2_formula':       r.fit_formula if r.fit_formula != 'n/a' else None,
+            'vg_alpha':         r.alpha,
+            'vg_n':             r.n,
             'Ks_gardner_mmh':   round(result.kh.Ks_g  * 36000, 3) if result.kh else None,
             'Ks_vg_mmh':        round(result.kh.Ks_vg * 36000, 3)
                                 if result.kh and result.kh.Ks_vg is not None else None,
@@ -927,6 +934,7 @@ with tab_results:
                 'K_OLS [mm/h]':   round(r.K_ols_cm_s * 36000, 2),
                 'K_Su [mm/h]':    round(r.K_su_cm_s * 36000, 2) if r.K_su_cm_s else None,
                 'R²':             round(r.ols.r2, 4),
+                'A₂':             _A2_NAME.get(r.fit_formula),
                 'SS%':            f'{r.ss.conv_frac:.0%}' if r.ss else None,
                 'Ks_est [mm/h]':  round(r_obj.kh.Ks_est * 36000, 2)
                                   if r_obj.kh else None,

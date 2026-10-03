@@ -404,8 +404,8 @@ class InfiltrationRun:
             disk_radius_cm=self.r0_cm,
             signal_type=self.signal_type,
             reservoir_area_cm2=self.reservoir_area_cm2,
-            alpha=self.alpha,
-            n=self.n,
+            alpha=a,          # VG params actually used for A₂
+            n=n,
             soil_texture=self.soil_texture,
             db=self.db,
             ols=ols, su=su, ml=ml,

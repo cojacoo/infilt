@@ -54,6 +54,11 @@ REFERENCES: list[tuple[str, str]] = [
         'https://doi.org/10.1016/j.jhydrol.2025.135443',
     ),
     (
+        'Carsel, R.F. & Parrish, R.S. (1988). Developing joint probability distributions of '
+        'soil water retention characteristics. *Water Resources Research*, 24(5), 755–769.',
+        'https://doi.org/10.1029/WR024i005p00755',
+    ),
+    (
         'Schaap, M.G., Leij, F.J., & van Genuchten, M.Th. (2001). ROSETTA: a computer '
         'program for estimating soil hydraulic parameters with hierarchical pedotransfer '
         'functions. *Journal of Hydrology*, 251(3–4), 163–176.',
@@ -93,20 +98,35 @@ SECTIONS: list[tuple[str, str]] = [
         'Mini-disk infiltrometer — Philip two-term fitting',
         'Cumulative infiltration I(t) = ΔV / A_disk follows the Philip (1957) two-term model:\n\n'
         '    I(t) = C₁ · √t + C₂ · t\n\n'
+        'C₁ is governed by sorptivity, C₂ by gravity, i.e. by K(h₀). '
         'Three fitting methods are applied: '
-        '**OLS** (ordinary least squares, fixed exponent β = 0.5), '
+        '**OLS** (ordinary least squares, fixed exponent β = 0.5; primary result), '
         'the **Su method** (free β), '
         'and the **Mittag-Leffler generalisation** (Su 2025, Guo et al. 2026) which '
         'accommodates non-integer-order infiltration kinetics in structured or macroporous soils. '
-        'K(h₀) = C₂ / A₂, where A₂ is the geometry correction of Zhang (1997) for van Genuchten '
-        'shape parameter n ≥ 1.35, or Dohnal et al. (2010) for n < 1.35 (fine-textured soils). '
-        'van Genuchten parameters (α, n) are taken from ROSETTA H1 class averages '
-        '(Schaap et al. 2001, as tabulated in Dohnal et al. 2010) by USDA texture class, '
-        'or from Carsel & Parrish (1988) for compatibility with the METER manual, '
-        'or supplied manually. '
-        'A₂ is calibrated for the Philip C₂; K from the Su and Mittag-Leffler gravity terms '
-        'is therefore indicative only. Su (3 parameters) and Mittag-Leffler (4 parameters) '
-        'are reported only for runs with ≥ 5 and ≥ 6 readings, respectively.',
+        'Su (3 parameters) and Mittag-Leffler (4 parameters) are reported only for runs with '
+        '≥ 5 and ≥ 6 readings, respectively.',
+    ),
+    (
+        'Mini-disk infiltrometer — A₂ correction (Zhang 1997 / Dohnal et al. 2010)',
+        'K(h₀) = C₂ / A₂. A₂ accounts for the 3-D (lateral capillary) flow below the small disk '
+        'and depends on van Genuchten α, n, disk radius r₀ and pressure head h₀ < 0 [cm]. '
+        'The formula is selected automatically from n of the van Genuchten parameters in use:\n\n'
+        '- **Zhang (1997), n ≥ 1.35:**  A₂ = 11.65 (n^0.1 − 1) · exp[d (n − 1.9) α h₀] / (α r₀)^0.91, '
+        'with d = 7.5 for n < 1.9 and d = 2.92 for n ≥ 1.9.\n'
+        '- **Dohnal et al. (2010), n < 1.35:**  A₂ = 11.65 (n^0.82 − 1) · exp[34.65 (n − 1.19) α h₀] '
+        '/ (α r₀)^0.60. Zhang\'s formula gives large errors for such wide pore-size '
+        'distributions (fine-textured soils); Dohnal et al. recalibrated it for mini-disk geometry '
+        'and |h₀| ≤ 6 cm (mean relative error ≈ 10 %).\n\n'
+        'With the default Carsel & Parrish (1988) class parameters (as in the METER manual), Dohnal '
+        'applies to clay loam, silty clay loam, sandy clay, silty clay and clay; all other classes '
+        'use Zhang. Alternatively ROSETTA H1 class averages (Schaap et al. 2001, as tabulated in '
+        'Dohnal et al. 2010) or manual α, n can be used. The formula and α, n used are listed per '
+        'run in the results table. '
+        'Runs without own α, n (Philip evaluation of hood data) use α, n from a first-pass '
+        'Mualem–van Genuchten fit of the campaign K(h). '
+        'A₂ is calibrated for the Philip C₂; K from the Su and Mittag-Leffler gravity terms is '
+        'therefore indicative only.',
     ),
     (
         'K(h) model fitting and Ksat',
@@ -162,6 +182,7 @@ def _to_rl(text: str) -> str:
         ('β', 'beta'), ('σ', 'sigma'), ('Δ', 'delta'),
         ('–', '-'), ('—', '-'), ('’', "'"),
         ('±', '+/-'), ('→', '->'), ('≠', '!='),
+        ('−', '-'), ('≈', '~'), ('√', 'sqrt '),
     ]
     for uni, asc in replacements:
         text = text.replace(uni, asc)
@@ -176,7 +197,7 @@ def _to_rl(text: str) -> str:
 
 def methods_pdf_paragraphs() -> list[tuple[str, str]]:
     """Return [(heading, reportlab_html_body), ...] for PDF generation."""
-    return [(h, _to_rl(body)) for h, body in SECTIONS]
+    return [(_to_rl(h), _to_rl(body)) for h, body in SECTIONS]
 
 
 def references_pdf() -> list[tuple[str, str]]:
