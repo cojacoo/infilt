@@ -68,26 +68,40 @@ def _wooding_inversion(
 # K(h) fits dataclass
 # ---------------------------------------------------------------------------
 
+# 3-parameter K(h) models need residual degrees of freedom
+MIN_TENSIONS_3P = 4
+
+
 @dataclass
 class KhFit:
-    """Fitted K(h) model parameters (three models)."""
+    """Fitted K(h) model parameters (three models).
+
+    VG / Kosugi fields are None when fewer than MIN_TENSIONS_3P tensions
+    are available or the fit failed; Gardner needs only 2.
+    """
     # Gardner: K = Ks · exp(αG · h)
     Ks_g: float
     aG: float
     # Mualem-van Genuchten
-    Ks_vg: float
-    alpha_vg: float
-    n_vg: float
+    Ks_vg: Optional[float] = None
+    alpha_vg: Optional[float] = None
+    n_vg: Optional[float] = None
     # Mualem-Kosugi
-    Ks_ko: float
-    hm_ko: float
-    sigma_ko: float
+    Ks_ko: Optional[float] = None
+    hm_ko: Optional[float] = None
+    sigma_ko: Optional[float] = None
 
     # plotting arrays (set by Campaign)
     h_plot: Optional[np.ndarray] = field(repr=False, default=None)
     K_g_plot:  Optional[np.ndarray] = field(repr=False, default=None)
     K_vg_plot: Optional[np.ndarray] = field(repr=False, default=None)
     K_ko_plot: Optional[np.ndarray] = field(repr=False, default=None)
+
+    @property
+    def Ks_est(self) -> float:
+        """Ksat estimate [cm s⁻¹]: mean of Gardner and (if fitted) VG Ks."""
+        ks = [self.Ks_g] + ([self.Ks_vg] if self.Ks_vg is not None else [])
+        return float(np.mean(ks))
 
 
 # ---------------------------------------------------------------------------
@@ -183,11 +197,16 @@ class CampaignResult:
                 (f'  {"Mualem-VG":<16}  {self.kh.Ks_vg*1e-2:>12.3e}'
                  f'  {self.kh.Ks_vg*36000:>10.2f}'
                  f'  {"α = "+f"{self.kh.alpha_vg:.4f} cm⁻¹":>22}'
-                 f'  {"n = "+f"{self.kh.n_vg:.4f}":>20}'),
+                 f'  {"n = "+f"{self.kh.n_vg:.4f}":>20}')
+                if self.kh.Ks_vg is not None else
+                f'  {"Mualem-VG":<16}  n/a (needs ≥ {MIN_TENSIONS_3P} tensions)',
                 (f'  {"Mualem-Kosugi":<16}  {self.kh.Ks_ko*1e-2:>12.3e}'
                  f'  {self.kh.Ks_ko*36000:>10.2f}'
                  f'  {"hm = "+f"{self.kh.hm_ko:.4f} cm":>22}'
-                 f'  {"σ = "+f"{self.kh.sigma_ko:.4f}":>20}'),
+                 f'  {"σ = "+f"{self.kh.sigma_ko:.4f}":>20}')
+                if self.kh.Ks_ko is not None else
+                f'  {"Mualem-Kosugi":<16}  n/a (needs ≥ {MIN_TENSIONS_3P} tensions)',
+                f'  Ksat estimate (Gardner + VG mean): {self.kh.Ks_est*36000:.2f} mm/h',
                 '',
                 (f'  {"h₀[cm]":>8}  {"K_prim[mm/h]":>13}'
                  f'  {"res_Gardner":>13}  {"res_VG":>10}  {"res_Kosugi":>12}'
@@ -196,14 +215,18 @@ class CampaignResult:
             ]
             for h0, K in zip(self.h_arr, self.K_arr):
                 K_g  = self.kh.Ks_g  * np.exp(self.kh.aG * h0)
-                K_vg = compute_K_vg_mualem(h0, self.kh.Ks_vg,
-                                            self.kh.alpha_vg, self.kh.n_vg)
-                K_ko = compute_K_kosugi(h0, self.kh.Ks_ko,
-                                         self.kh.hm_ko, self.kh.sigma_ko)
+                res_vg = res_ko = '         n/a'
+                if self.kh.Ks_vg is not None:
+                    K_vg = compute_K_vg_mualem(h0, self.kh.Ks_vg,
+                                                self.kh.alpha_vg, self.kh.n_vg)
+                    res_vg = f'{(K-K_vg)*36000:>+12.1f}'
+                if self.kh.Ks_ko is not None:
+                    K_ko = compute_K_kosugi(h0, self.kh.Ks_ko,
+                                             self.kh.hm_ko, self.kh.sigma_ko)
+                    res_ko = f'{(K-K_ko)*36000:>+12.1f}'
                 lines.append(
                     f'  {h0:>8.2f}  {K*36000:>13.1f}'
-                    f'  {(K-K_g)*36000:>+13.1f}  {(K-K_vg)*36000:>+10.1f}'
-                    f'  {(K-K_ko)*36000:>+12.1f}'
+                    f'  {(K-K_g)*36000:>+13.1f}{res_vg}{res_ko}'
                 )
         else:
             lines.append('  Not enough valid runs for K(h) fitting (need ≥ 2).')
@@ -356,24 +379,26 @@ class CampaignResult:
                 ),
                 row=1, col=2,
             )
-            fig.add_trace(
-                go.Scatter(
-                    x=h_pl, y=self.kh.K_vg_plot * 36_000,
-                    mode='lines',
-                    name=f'Mualem-VG  α={self.kh.alpha_vg:.3f}  n={self.kh.n_vg:.2f}',
-                    line=dict(color='#ff7f0e', width=2, dash='dash'),
-                ),
-                row=1, col=2,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=h_pl, y=self.kh.K_ko_plot * 36_000,
-                    mode='lines',
-                    name=f'Mualem-Ko  hm={self.kh.hm_ko:.2f}  σ={self.kh.sigma_ko:.2f}',
-                    line=dict(color='#9467bd', width=2, dash='dot'),
-                ),
-                row=1, col=2,
-            )
+            if self.kh.K_vg_plot is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=h_pl, y=self.kh.K_vg_plot * 36_000,
+                        mode='lines',
+                        name=f'Mualem-VG  α={self.kh.alpha_vg:.3f}  n={self.kh.n_vg:.2f}',
+                        line=dict(color='#ff7f0e', width=2, dash='dash'),
+                    ),
+                    row=1, col=2,
+                )
+            if self.kh.K_ko_plot is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=h_pl, y=self.kh.K_ko_plot * 36_000,
+                        mode='lines',
+                        name=f'Mualem-Ko  hm={self.kh.hm_ko:.2f}  σ={self.kh.sigma_ko:.2f}',
+                        line=dict(color='#9467bd', width=2, dash='dot'),
+                    ),
+                    row=1, col=2,
+                )
 
         # Same color per tension as Panel A (sorted_res order)
         color_by_h0 = {r.h0_cm: PALETTE[i % len(PALETTE)]
@@ -412,8 +437,9 @@ class CampaignResult:
 
         # Ksat marker at h=0 from Gardner and VG models
         if self.kh is not None:
-            ks_vals = [self.kh.Ks_g * 36_000, self.kh.Ks_vg * 36_000]
-            ks_mean = float(np.mean(ks_vals))
+            ks_vals = [k * 36_000 for k in (self.kh.Ks_g, self.kh.Ks_vg)
+                       if k is not None]
+            ks_mean = self.kh.Ks_est * 36_000
             ks_lo   = float(min(ks_vals))
             ks_hi   = float(max(ks_vals))
             fig.add_trace(
@@ -603,7 +629,7 @@ class Campaign:
         h_fp = np.array(h_fp_list)
         K_fp = np.array(K_fp_list)
         alpha_fp, n_fp = 0.05, 2.0
-        if len(h_fp) >= 3:
+        if len(h_fp) >= MIN_TENSIONS_3P:
             try:
                 _, alpha_fp, n_fp = fit_vg_mualem_K(h_fp, K_fp)
             except Exception:
@@ -654,31 +680,32 @@ class Campaign:
         kh: Optional[KhFit] = None
 
         if len(valid) >= 2:
+            # Each model fitted separately so one failure does not drop the others.
+            h_plot = np.linspace(0.0, max(abs(h_arr)) * 1.3, 400)
             try:
                 Ks_g, aG = fit_gardner_K(h_arr, K_arr)
-                Ks_vg, a_vg, n_vg = fit_vg_mualem_K(h_arr, K_arr)
-                Ks_ko, hm_ko, sig_ko = fit_kosugi_K(h_arr, K_arr)
-
-                h_plot = np.linspace(0.0, max(abs(h_arr)) * 1.3, 400)
-                K_g_pl  = Ks_g * np.exp(-aG * h_plot)
-                K_vg_pl = np.array([
-                    compute_K_vg_mualem(-h, Ks_vg, a_vg, n_vg) for h in h_plot
-                ])
-                K_ko_pl = np.array([
-                    compute_K_kosugi(-h, Ks_ko, hm_ko, sig_ko) for h in h_plot
-                ])
-
-                kh = KhFit(
-                    Ks_g=Ks_g, aG=aG,
-                    Ks_vg=Ks_vg, alpha_vg=a_vg, n_vg=n_vg,
-                    Ks_ko=Ks_ko, hm_ko=hm_ko, sigma_ko=sig_ko,
-                    h_plot=h_plot,
-                    K_g_plot=K_g_pl,
-                    K_vg_plot=K_vg_pl,
-                    K_ko_plot=K_ko_pl,
-                )
+                kh = KhFit(Ks_g=Ks_g, aG=aG, h_plot=h_plot,
+                           K_g_plot=Ks_g * np.exp(-aG * h_plot))
             except Exception as exc:
-                warnings.warn(f"K(h) fitting failed: {exc}", stacklevel=2)
+                warnings.warn(f"Gardner K(h) fit failed: {exc}", stacklevel=2)
+
+            if kh is not None and len(valid) >= MIN_TENSIONS_3P:
+                try:
+                    kh.Ks_vg, kh.alpha_vg, kh.n_vg = fit_vg_mualem_K(h_arr, K_arr)
+                    kh.K_vg_plot = np.array([
+                        compute_K_vg_mualem(-h, kh.Ks_vg, kh.alpha_vg, kh.n_vg)
+                        for h in h_plot
+                    ])
+                except Exception as exc:
+                    warnings.warn(f"Mualem-VG K(h) fit failed: {exc}", stacklevel=2)
+                try:
+                    kh.Ks_ko, kh.hm_ko, kh.sigma_ko = fit_kosugi_K(h_arr, K_arr)
+                    kh.K_ko_plot = np.array([
+                        compute_K_kosugi(-h, kh.Ks_ko, kh.hm_ko, kh.sigma_ko)
+                        for h in h_plot
+                    ])
+                except Exception as exc:
+                    warnings.warn(f"Mualem-Kosugi K(h) fit failed: {exc}", stacklevel=2)
 
         return CampaignResult(
             site=self.site,

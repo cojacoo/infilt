@@ -103,7 +103,10 @@ SECTIONS: list[tuple[str, str]] = [
         'van Genuchten parameters (α, n) are taken from ROSETTA H1 class averages '
         '(Schaap et al. 2001, as tabulated in Dohnal et al. 2010) by USDA texture class, '
         'or from Carsel & Parrish (1988) for compatibility with the METER manual, '
-        'or supplied manually.',
+        'or supplied manually. '
+        'A₂ is calibrated for the Philip C₂; K from the Su and Mittag-Leffler gravity terms '
+        'is therefore indicative only. Su (3 parameters) and Mittag-Leffler (4 parameters) '
+        'are reported only for runs with ≥ 5 and ≥ 6 readings, respectively.',
     ),
     (
         'K(h) model fitting and Ksat',
@@ -112,8 +115,10 @@ SECTIONS: list[tuple[str, str]] = [
         '- **Gardner exponential:** K(h) = Ks · exp(αG · h)\n'
         '- **Mualem–van Genuchten:** K(h) = Ks · Se^L · [1−(1−Se^(1/m))^m]²\n'
         '- **Mualem–Kosugi:** K(h) based on log-normal pore-size distribution\n\n'
+        'Each model is fitted independently. The 3-parameter VG and Kosugi models are '
+        'fitted only when ≥ 4 tensions are available; with fewer, Gardner alone is used. '
         'Saturated hydraulic conductivity **Ksat** is estimated as the mean of the Gardner '
-        'and VG model Ks values extrapolated to h = 0 (ponded condition). '
+        'and (if fitted) VG model Ks values extrapolated to h = 0 (ponded condition). '
         'The Kosugi Ks is reported separately as it assumes a different pore-size '
         'distribution.',
     ),

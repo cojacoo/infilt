@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["plotly>=5.0"]
-app  = ["streamlit>=1.30", "pandas>=2.0", "plotly>=5.0",
+app  = ["streamlit>=1.50", "pandas>=2.0", "plotly>=5.0",
         "reportlab>=4.0", "kaleido>=0.2"]
 
 [tool.setuptools.packages.find]

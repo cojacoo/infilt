@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from infilt import (
     Campaign, InfiltrationRun,
     HOOD_IL2700, MINIDISK_STUDENT, MINIDISK_METER,
-    list_textures,
+    list_textures, get_vg_params,
     REFERENCES, FOOTER, methods_markdown, methods_pdf_paragraphs, references_pdf,
 )
 
@@ -158,7 +158,7 @@ def _generate_pdf(result, meta: dict, df: pd.DataFrame) -> bytes:
             f'{r.K_wooding_cm_s*36000:.2f}' if r.K_wooding_cm_s else '—',
             f'{se_K:.2f}' if se_K > 0 else '—',
             f'{r.K_ols_cm_s*36000:.2f}',
-            f'{r.K_su_cm_s*36000:.2f}',
+            f'{r.K_su_cm_s*36000:.2f}' if r.K_su_cm_s else '—',
             f'{r.ols.r2:.4f}',
             f'{r.ss.conv_frac:.0%}' if r.ss else '—',
         ])
@@ -169,18 +169,18 @@ def _generate_pdf(result, meta: dict, df: pd.DataFrame) -> bytes:
 
     # ── K(h) model fits — list ────────────────────────────────────────────────
     if result.kh:
-        ks_g   = result.kh.Ks_g  * 36000
-        ks_vg  = result.kh.Ks_vg * 36000
-        ks_ko  = result.kh.Ks_ko * 36000
-        ks_est = (ks_g + ks_vg) / 2
+        kh = result.kh
+        na = 'n/a (needs >= 4 tensions)'
         elems.append(Paragraph('K(h) Model Fits', H))
         fit_lines = [
-            f'<b>Gardner:</b>  Ks = {ks_g:.2f} mm/h,  aG = {result.kh.aG:.4f} cm-1',
-            f'<b>Mualem-VG:</b>  Ks = {ks_vg:.2f} mm/h,  a = {result.kh.alpha_vg:.4f} cm-1,'
-            f'  n = {result.kh.n_vg:.3f}',
-            f'<b>Mualem-Kosugi:</b>  Ks = {ks_ko:.2f} mm/h,  hm = {result.kh.hm_ko:.4f} cm,'
-            f'  sigma = {result.kh.sigma_ko:.4f}',
-            f'<b>Ksat estimate (Gardner + VG mean):</b>  {ks_est:.2f} mm/h',
+            f'<b>Gardner:</b>  Ks = {kh.Ks_g*36000:.2f} mm/h,  aG = {kh.aG:.4f} cm-1',
+            f'<b>Mualem-VG:</b>  '
+            + (f'Ks = {kh.Ks_vg*36000:.2f} mm/h,  a = {kh.alpha_vg:.4f} cm-1,'
+               f'  n = {kh.n_vg:.3f}' if kh.Ks_vg is not None else na),
+            f'<b>Mualem-Kosugi:</b>  '
+            + (f'Ks = {kh.Ks_ko*36000:.2f} mm/h,  hm = {kh.hm_ko:.4f} cm,'
+               f'  sigma = {kh.sigma_ko:.4f}' if kh.Ks_ko is not None else na),
+            f'<b>Ksat estimate (Gardner + VG mean):</b>  {kh.Ks_est*36000:.2f} mm/h',
         ]
         for line in fit_lines:
             elems.append(Paragraph(line, B))
@@ -242,12 +242,12 @@ def _append_to_log(result, meta: dict) -> None:
             'K_wooding_mmh':    round(r.K_wooding_cm_s * 36000, 3) if r.K_wooding_cm_s else None,
             'sigma_K_mmh':      round(se_K, 3) if se_K else None,
             'K_ols_mmh':        round(r.K_ols_cm_s * 36000, 3),
-            'K_su_mmh':         round(r.K_su_cm_s * 36000, 3),
+            'K_su_mmh':         round(r.K_su_cm_s * 36000, 3) if r.K_su_cm_s else None,
             'r2_ols':           round(r.ols.r2, 4),
             'Ks_gardner_mmh':   round(result.kh.Ks_g  * 36000, 3) if result.kh else None,
-            'Ks_vg_mmh':        round(result.kh.Ks_vg * 36000, 3) if result.kh else None,
-            'Ks_est_mmh':       round((result.kh.Ks_g + result.kh.Ks_vg) / 2 * 36000, 3)
-                                if result.kh else None,
+            'Ks_vg_mmh':        round(result.kh.Ks_vg * 36000, 3)
+                                if result.kh and result.kh.Ks_vg is not None else None,
+            'Ks_est_mmh':       round(result.kh.Ks_est * 36000, 3) if result.kh else None,
         })
 
     new_df = pd.DataFrame(rows)
@@ -285,6 +285,158 @@ def _parse_upload(uploaded) -> pd.DataFrame | None:
         return pd.read_excel(uploaded)
     content = uploaded.read().decode('latin-1')
     return _parse_text(content)
+
+
+def _to_seconds(val) -> float | None:
+    """Parse a time value into seconds.
+
+    Accepts:
+      - plain (possibly decimal) seconds, e.g. '4', '4.5', '4,5'
+      - relative clock strings 'HH:MM:SS' or 'MM:SS', with optional
+        decimal seconds, e.g. '00:00:01', '00:00:01.5', '01:30'
+    Returns None if the value can't be parsed (row will be dropped).
+    """
+    if val is None:
+        return None
+    s = str(val).strip().replace(',', '.')
+    if s in ('', 'nan', 'NaT', 'None'):
+        return None
+    if ':' in s:
+        parts = s.split(':')
+        try:
+            nums = [float(p) for p in parts]
+        except ValueError:
+            return None
+        if len(nums) == 3:
+            h, m, sec = nums
+        elif len(nums) == 2:
+            h, (m, sec) = 0.0, nums
+        else:
+            return None
+        return h * 3600 + m * 60 + sec
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _to_float(val) -> float | None:
+    """Parse a signal value, tolerating trailing annotations like '10,3 (5 min)'."""
+    if val is None:
+        return None
+    s = str(val).strip().replace(',', '.')
+    if s in ('', 'nan', 'None'):
+        return None
+    s = s.split()[0]
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _parse_multi_csv(uploaded) -> tuple[list[dict], list[str]]:
+    """Parse a multi-run CSV with the following 4-row header structure:
+
+    Row 1: site/run name  (repeated across two columns per tension)
+    Row 2: soil texture   (repeated)
+    Row 3: suction value  in cm (0 / 1 / 3 …)
+    Row 4: column labels  ('Zeit', 'Wasserstand [cm *10]')
+    Row 5+: data
+
+    Returns (runs, warnings) where each run is a dict with keys:
+        site, texture, df  (tidy DataFrame with suction_mm / time_s / signal columns)
+    """
+    content = uploaded.read().decode('latin-1')
+    raw = pd.read_csv(io.StringIO(content), header=None, dtype=str)
+
+    runs: list[dict] = []
+    warnings_out: list[str] = []
+
+    n_cols = len(raw.columns)
+
+    # Walk through column pairs
+    col_idx = 0
+    while col_idx + 1 < n_cols:
+        site_val    = str(raw.iloc[0, col_idx]).strip()
+        texture_val = str(raw.iloc[1, col_idx]).strip()
+        suction_raw = str(raw.iloc[2, col_idx]).strip()
+
+        # Skip empty / filler columns
+        if site_val in ('', 'nan') or suction_raw in ('', 'nan'):
+            col_idx += 1
+            continue
+
+        # Convert suction: stored in cm, app expects mm
+        try:
+            suction_cm = float(suction_raw.replace(',', '.'))
+            suction_mm = suction_cm * 10
+        except ValueError:
+            warnings_out.append(
+                f"Column {col_idx}: could not parse suction '{suction_raw}' — skipped."
+            )
+            col_idx += 2
+            continue
+
+        # Extract the two data columns (time, signal)
+        time_col   = raw.iloc[4:, col_idx].reset_index(drop=True)
+        signal_col = raw.iloc[4:, col_idx + 1].reset_index(drop=True)
+
+        # Parse time — supports HH:MM:SS, MM:SS, and plain (decimal) seconds
+        times   = time_col.map(_to_seconds)
+        signals = signal_col.map(_to_float)
+
+        df_pair = pd.DataFrame({
+            'suction_mm': suction_mm,
+            'time_s':     times,
+            'signal':     signals,
+        }).dropna(subset=['time_s', 'signal'])
+
+        # Warn only about rows that actually contained a value but failed to
+        # parse (as opposed to blank padding at the end of a shorter column).
+        def _had_content(v) -> bool:
+            return str(v).strip().lower() not in ('', 'nan', 'none')
+
+        n_bad = sum(
+            1 for tv, sv, t, s in zip(time_col, signal_col, times, signals)
+            if (_had_content(tv) or _had_content(sv)) and (t is None or s is None)
+        )
+        if n_bad > 0:
+            warnings_out.append(
+                f"Run '{site_val}' suction {suction_mm:.0f} mm: {n_bad} row(s) "
+                "had an unparseable time or signal value and were skipped."
+            )
+
+        # Convert signal: stored as cm×10 (i.e. mm×10 → need mm)
+        # Wasserstand [cm *10] means the value is level in units of 0.1 cm = 1 mm
+        # so the raw number already equals mm directly (e.g. 14.8 → 14.8 mm)
+        # No conversion needed — signal is already in mm (level in mm).
+
+        if df_pair.empty:
+            warnings_out.append(
+                f"Run '{site_val}' suction {suction_mm:.0f} mm: no valid data rows — skipped."
+            )
+            col_idx += 2
+            continue
+
+        # Re-base time to 0 at first measurement
+        df_pair['time_s'] = df_pair['time_s'] - df_pair['time_s'].iloc[0]
+
+        # Find existing run for this site or create new one
+        existing = next((r for r in runs if r['site'] == site_val), None)
+        if existing is None:
+            runs.append({
+                'site':    site_val,
+                'texture': texture_val,
+                'df':      df_pair,
+            })
+        else:
+            existing['df'] = pd.concat(
+                [existing['df'], df_pair], ignore_index=True
+            )
+
+        col_idx += 2
+
+    return runs, warnings_out
 
 
 def _auto_map(cols: list[str]) -> tuple[str, str, str]:
@@ -340,6 +492,31 @@ with st.sidebar:
         ['level', 'volume'],
         index=0 if preset_base.get('signal_type') == 'level' else 1,
     )
+    # Mini-disk read as a water level in the tube → mL via tube cross-section
+    signal_factor = 1.0
+    if signal_type == 'volume':
+        md_reading = st.radio('Mini-disk reading',
+                              ['Volume [mL]', 'Water level in tube'], horizontal=True)
+        if md_reading == 'Water level in tube':
+            lc1, lc2 = st.columns(2)
+            tube_area_cm2 = lc1.number_input(
+                'Tube cross-section [cm²]', value=None, min_value=0.01,
+                step=0.1, format='%.3f',
+                help='Inner cross-section of the reservoir tube, π·(ID/2)². '
+                     'Measure on the device.',
+            )
+            level_unit = lc2.selectbox('Level unit', ['mm', 'cm'])
+            if tube_area_cm2 is None:
+                st.error('Enter the tube cross-section to convert level → mL.')
+                st.stop()
+            signal_factor = tube_area_cm2 * (0.1 if level_unit == 'mm' else 1.0)
+            st.caption(f'mL = level × {signal_factor:g}')
+
+    suction_offset_cm = st.number_input(
+        'Suction offset [cm]', value=0.0, step=0.1, format='%.2f',
+        help='Added to every suction setting, e.g. 0.5 if setting "0" actually '
+             'applies 0.5 cm suction at the disk. Device-specific — check calibration.',
+    )
     reservoir_area_cm2: float | None = None
     if signal_type == 'level':
         reservoir_area_cm2 = st.number_input(
@@ -353,11 +530,16 @@ with st.sidebar:
     soil_mode = st.radio('VG params source', ['Texture class', 'Manual α, n'],
                           horizontal=True)
     soil_texture: str | None = None
+    use_file_texture = False
     alpha_vg: float | None  = None
     n_vg: float | None      = None
     if soil_mode == 'Texture class':
         soil_texture = st.selectbox('USDA texture class', SOIL_TEXTURES,
                                      index=SOIL_TEXTURES.index('loam'))
+        use_file_texture = st.checkbox(
+            'Use per-site texture from multi-run file', value=True,
+            help='Falls back to the class above if the file texture is unknown.',
+        )
     else:
         c1, c2 = st.columns(2)
         alpha_vg = c1.number_input('α [1/cm]', value=0.036, format='%.4f', step=0.001)
@@ -370,9 +552,27 @@ with st.sidebar:
 
 st.title('💧 InFilt — Tension Infiltrometer Analysis')
 
-tab_input, tab_results, tab_history, tab_methods = st.tabs(
-    ['📋  Data Input', '📊  Results & Report', '📁  History', '📖  Methods']
+tab_input, tab_check, tab_results, tab_history, tab_methods = st.tabs(
+    ['📋  Data Input', '🔍  Data Check', '📊  Results & Report', '📁  History', '📖  Methods']
 )
+
+
+def _run_key(df: pd.DataFrame) -> pd.Series:
+    """'site @ suction' label per row (raw suction setting)."""
+    return df['site'].astype(str) + ' @ ' + df['suction_mm'].map(lambda x: f'{x:g}') + ' mm'
+
+
+def _prepare(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply current sidebar conversions and exclusions to raw loaded data.
+
+    Done at use time (not load time) so changing a setting after loading
+    always takes effect.
+    """
+    keep = ~_run_key(df).isin(st.session_state.get('excluded', []))
+    return df[keep].assign(
+        signal=df['signal'] * signal_factor,
+        suction_mm=df['suction_mm'] + suction_offset_cm * 10,
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Data Input
@@ -386,7 +586,7 @@ with tab_input:
     )
 
     input_mode = st.radio(
-        'Input method', ['📂 Upload file', '📋 Copy-paste table'],
+        'Input method', ['📂 Upload file', '📋 Copy-paste table', "File with multiple Raw Data"],
         horizontal=True,
     )
 
@@ -400,6 +600,68 @@ with tab_input:
             df_raw = _parse_upload(uploaded)
             if df_raw is None:
                 st.error('Could not parse file — check separator and encoding.')
+
+    elif input_mode == "File with multiple Raw Data":
+        st.markdown(
+            '**Expected format:** 4-row header per column-pair — '
+            '**Row 1:** site name · **Row 2:** soil texture · '
+            '**Row 3:** suction [cm] · **Row 4:** `Zeit` / `Wasserstand [cm *10]`. '
+            'Each site can have multiple tension pairs side-by-side.'
+        )
+        uploaded = st.file_uploader(
+            'Multi-run CSV', type=['csv', 'txt', 'tsv']
+        )
+        if uploaded:
+            with st.spinner('Parsing multi-run file …'):
+                runs, parse_warnings = _parse_multi_csv(uploaded)
+
+            for w in parse_warnings:
+                st.warning(w)
+
+            if not runs:
+                st.error('No valid runs found — check the file format.')
+            else:
+                unique_names = sorted({r['site'] for r in runs})
+                total_tensions = sum(r['df']['suction_mm'].nunique() for r in runs)
+                st.success(
+                    f'Found **{len(unique_names)} site(s)** with '
+                    f'**{total_tensions} tension series** total.'
+                )
+
+                # Preview table of all runs
+                preview_rows = []
+                for r in runs:
+                    tensions_list = sorted(r['df']['suction_mm'].unique())
+                    preview_rows.append({
+                        'Site': r['site'],
+                        'Texture': r['texture'],
+                        'Tensions [mmWC]': str([int(t) for t in tensions_list]),
+                        'Rows': len(r['df']),
+                    })
+                st.dataframe(pd.DataFrame(preview_rows), width='stretch')
+
+                if st.button('✅ Load ALL runs into analysis', type='primary'):
+                    # Build a combined tidy df with all runs, tagged by site
+                    all_dfs = []
+                    for r in runs:
+                        df_r = pd.DataFrame({
+                            'site':        r['site'],
+                            'instrument':  instr_key,
+                            'suction_mm':  r['df']['suction_mm'],
+                            'signal_type': signal_type,
+                            'time_s':      r['df']['time_s'],
+                            'signal':      r['df']['signal'],
+                            'texture':     r['texture'],
+                        })
+                        all_dfs.append(df_r)
+                    combined = pd.concat(all_dfs, ignore_index=True)
+                    st.session_state['multi_runs']    = runs          # raw run list
+                    st.session_state['multi_df_tidy'] = combined      # combined tidy df
+                    st.session_state.pop('multi_results', None)       # clear old results
+                    st.success(
+                        f'✅ Loaded {len(unique_names)} runs ({len(combined)} rows total) '
+                        f'→ switch to **Results & Report** tab to run the analysis.'
+                    )
 
     else:
         pasted = st.text_area(
@@ -432,12 +694,23 @@ with tab_input:
         signal_col  = c3.selectbox('Signal',          cols, index=cols.index(auto_sig))
 
         try:
+            time_parsed = pd.to_numeric(
+                df_raw[time_col].map(_to_seconds), errors='coerce'
+            )
+            n_time_bad = df_raw[time_col].notna().sum() - time_parsed.notna().sum()
+            if n_time_bad > 0:
+                st.warning(
+                    f'⚠️ {n_time_bad} row(s) had a time value that could not be '
+                    'parsed (expected plain seconds or HH:MM:SS / MM:SS) and will '
+                    'be dropped.'
+                )
+
             df_tidy = pd.DataFrame({
                 'site':        site_name,
                 'instrument':  instr_key,
                 'suction_mm':  pd.to_numeric(df_raw[suction_col], errors='coerce'),
                 'signal_type': signal_type,
-                'time_s':      pd.to_numeric(df_raw[time_col],    errors='coerce'),
+                'time_s':      time_parsed,
                 'signal':      pd.to_numeric(df_raw[signal_col],  errors='coerce'),
             }).dropna(subset=['suction_mm', 'time_s', 'signal'])
 
@@ -446,7 +719,7 @@ with tab_input:
                 f'✅ {len(df_tidy)} rows — '
                 f'{len(tensions)} tension(s): {[int(t) for t in tensions]} mmWC'
             )
-            st.dataframe(df_tidy.head(12), use_container_width=True)
+            st.dataframe(df_tidy.head(12), width='stretch')
             st.session_state['df_tidy'] = df_tidy
 
         except Exception as exc:
@@ -454,102 +727,390 @@ with tab_input:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TAB 1b — Data Check
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_check:
+    import plotly.graph_objects as go
+
+    st.markdown(
+        'This shows exactly what has been loaded into the analysis for each '
+        'site/tension — after column mapping, time parsing, level→volume '
+        'conversion and suction offset have been applied. Use it to spot-check '
+        'that nothing was mis-read before running the analysis, and exclude '
+        'runs that should not enter the K(h) fits.'
+    )
+
+    frames = []
+    if 'df_tidy' in st.session_state:
+        frames.append(st.session_state['df_tidy'])
+    if 'multi_df_tidy' in st.session_state:
+        frames.append(st.session_state['multi_df_tidy'])
+
+    if not frames:
+        st.info('Load data in the **📋 Data Input** tab first.')
+    else:
+        raw_df = pd.concat(frames, ignore_index=True)
+        st.multiselect(
+            '🚫 Exclude runs from analysis', sorted(_run_key(raw_df).unique()),
+            key='excluded',
+            help='E.g. disturbed runs or instrument problems. Re-run the analysis afterwards.',
+        )
+        check_df = _prepare(raw_df)
+
+        sites = sorted(check_df['site'].astype(str).unique())
+        sel_site = st.selectbox('Site', sites, key='check_site')
+
+        site_df = check_df[check_df['site'].astype(str) == sel_site]
+        tensions = sorted(site_df['suction_mm'].unique())
+        sel_suction = st.selectbox(
+            'Suction level',
+            tensions,
+            format_func=lambda x: f'{int(x)} mmWC',
+            key='check_suction',
+        )
+
+        sub = (
+            site_df[site_df['suction_mm'] == sel_suction]
+            .sort_values('time_s')
+            .reset_index(drop=True)
+        )
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric('Rows loaded', len(sub))
+        m2.metric(
+            'Time range [s]',
+            f"{sub['time_s'].min():.1f} – {sub['time_s'].max():.1f}"
+            if not sub.empty else '—',
+        )
+        m3.metric(
+            'Signal range',
+            f"{sub['signal'].min():.3f} – {sub['signal'].max():.3f}"
+            if not sub.empty else '—',
+        )
+        m4.metric(
+            'Conversion applied',
+            f"× {signal_factor:g}, +{suction_offset_cm:g} cm",
+        )
+
+        st.dataframe(
+            sub[['time_s', 'signal']].rename(
+                columns={'time_s': 'time [s]',
+                         'signal': f'signal ({sub["signal_type"].iloc[0]})'
+                                   if not sub.empty else 'signal'}
+            ),
+            width='stretch',
+            height=320,
+        )
+
+        if not sub.empty:
+            fig_check = go.Figure(go.Scatter(
+                x=sub['time_s'], y=sub['signal'],
+                mode='lines+markers', line=dict(color='#4C72B0'),
+            ))
+            fig_check.update_layout(
+                title=f'{sel_site} — {int(sel_suction)} mmWC — raw signal vs. time',
+                xaxis_title='time [s]',
+                yaxis_title=f"signal ({sub['signal_type'].iloc[0]})",
+                height=380,
+            )
+            st.plotly_chart(fig_check, width='stretch')
+
+        with st.expander('📄 Show full loaded table for this site (all tensions)'):
+            st.dataframe(
+                site_df[['suction_mm', 'time_s', 'signal']]
+                .sort_values(['suction_mm', 'time_s'])
+                .reset_index(drop=True),
+                width='stretch',
+            )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — Results & Report
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_results:
-    if 'df_tidy' not in st.session_state:
+    import plotly.graph_objects as go
+    import plotly.express as px
+
+    has_single = 'df_tidy' in st.session_state
+    has_multi  = 'multi_df_tidy' in st.session_state
+
+    if not has_single and not has_multi:
         st.info('Load and map data in the **Data Input** tab first.')
-    else:
-        df_tidy = st.session_state['df_tidy']
+
+    # ── shared helpers (defined inside the tab so they close over sidebar vars) ──
+
+    def _make_preset() -> dict:
+        p: dict = {'disk_radius_mm': disk_radius_mm, 'signal_type': signal_type}
+        if reservoir_area_cm2 is not None:
+            p['reservoir_area_cm2'] = reservoir_area_cm2
+        return p
+
+    def _make_shared_kw(df_in: pd.DataFrame) -> dict:
+        kw: dict = {}
+        if signal_type == 'volume':
+            if soil_texture:
+                kw['soil_texture'] = soil_texture
+                if use_file_texture and 'texture' in df_in.columns:
+                    tex = str(df_in['texture'].iloc[0])
+                    try:
+                        get_vg_params(tex)
+                        kw['soil_texture'] = tex
+                    except ValueError:
+                        warnings.warn(f"Unknown texture '{tex}' in file — "
+                                      f"using '{soil_texture}'.")
+            elif alpha_vg and n_vg:
+                kw['alpha'] = alpha_vg
+                kw['n']     = n_vg
+        return kw
+
+    def _run_campaign(df_in: pd.DataFrame, site_label: str):
+        """Run Campaign for one tidy df. Returns (result, warn_msgs)."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            shared_kw = _make_shared_kw(df_in)
+            result = Campaign.from_dataframe(
+                df_in,
+                site=site_label,
+                hood_preset=_make_preset()     if signal_type == 'level'  else None,
+                minidisk_preset=_make_preset() if signal_type == 'volume' else None,
+                **shared_kw,
+            ).run()
+        warn_msgs = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+        return result, warn_msgs
+
+    def _summary_rows_for(site_label: str, r_obj) -> list[dict]:
+        rows = []
+        for r in r_obj.results:
+            se_K = 0.0
+            if r.ss and r.K_wooding_cm_s and r.ss.q_ss > 0:
+                se_K = r.ss.q_ss_se * 36000 * (r.K_wooding_cm_s / r.ss.q_ss)
+            rows.append({
+                'Site':           site_label,
+                'Suction [mmWC]': int(r.suction_mm),
+                'q_ss [mm/h]':    round(r.ss.q_ss * 36000, 2) if r.ss else None,
+                'K_Wood [mm/h]':  round(r.K_wooding_cm_s * 36000, 2) if r.K_wooding_cm_s else None,
+                '±σK [mm/h]':     round(se_K, 2) if se_K > 0 else None,
+                'K_OLS [mm/h]':   round(r.K_ols_cm_s * 36000, 2),
+                'K_Su [mm/h]':    round(r.K_su_cm_s * 36000, 2) if r.K_su_cm_s else None,
+                'R²':             round(r.ols.r2, 4),
+                'SS%':            f'{r.ss.conv_frac:.0%}' if r.ss else None,
+                'Ks_est [mm/h]':  round(r_obj.kh.Ks_est * 36000, 2)
+                                  if r_obj.kh else None,
+            })
+        return rows
+
+    def _show_run_detail(site_label: str, result, meta: dict, df_site: pd.DataFrame,
+                         warn_msgs: list[str], key_suffix: str):
+        """Render the full detail view for one run: warnings, table, figure, actions."""
+        for msg in warn_msgs:
+            st.warning(msg)
+
+        st.markdown(f'#### 📍 {site_label}')
+
+        # Results table
+        st.subheader('Results Table')
+        st.code(result.table(), language=None)
+
+        # Campaign figure
+        st.subheader('Campaign Figure')
+        st.plotly_chart(result.figure(), width='stretch')
+
+        st.divider()
+        act1, act2 = st.columns(2)
+
+        with act1:
+            if st.button('📄 Generate PDF Report', key=f'pdf_{key_suffix}',
+                         width='stretch'):
+                with st.spinner('Rendering PDF …'):
+                    try:
+                        pdf_bytes = _generate_pdf(result, meta, df_site)
+                        fname = (
+                            f'infilt_{site_label.replace(" ","_")}_'
+                            f'{datetime.now().strftime("%Y%m%d")}.pdf'
+                        )
+                        st.download_button(
+                            '⬇ Download PDF', data=pdf_bytes,
+                            file_name=fname, mime='application/pdf',
+                            width='stretch', key=f'dl_pdf_{key_suffix}',
+                        )
+                    except Exception as exc:
+                        st.error(f'PDF generation failed: {exc}')
+
+        with act2:
+            if st.button('💾 Save to results log', key=f'save_{key_suffix}',
+                         width='stretch'):
+                try:
+                    _append_to_log(result, meta)
+                    st.success(f'Saved → {RESULTS_FILE.relative_to(Path(__file__).parent)}')
+                except Exception as exc:
+                    st.error(f'Save failed: {exc}')
+
+    # ════════════════════════════════════════════════════════════════════════
+    # MULTI-RUN PATH
+    # ════════════════════════════════════════════════════════════════════════
+    if has_multi:
+        st.subheader('Multi-Run Analysis')
+
+        multi_df_tidy = _prepare(st.session_state['multi_df_tidy'])
+        all_sites     = sorted(multi_df_tidy['site'].unique())
+
+        st.caption(
+            f'{len(all_sites)} sites loaded — '
+            f'{len(multi_df_tidy)} rows total'
+        )
 
         run_col, _ = st.columns([1, 4])
-        if run_col.button('▶  Run Analysis', type='primary', use_container_width=True):
-            preset_run: dict = {'disk_radius_mm': disk_radius_mm, 'signal_type': signal_type}
-            if reservoir_area_cm2 is not None:
-                preset_run['reservoir_area_cm2'] = reservoir_area_cm2
+        if run_col.button('▶  Analyse ALL runs', type='primary', width='stretch'):
+            multi_results: dict = {}
+            bar = st.progress(0, text='Starting …')
+            errors: list[str] = []
+            for i, site_label in enumerate(all_sites):
+                bar.progress(i / len(all_sites), text=f'Analysing {site_label} …')
+                df_site = multi_df_tidy[multi_df_tidy['site'] == site_label].copy()
+                try:
+                    result, warn_msgs = _run_campaign(df_site, site_label)
+                    multi_results[site_label] = {
+                        'result':   result,
+                        'warnings': warn_msgs,
+                        'df':       df_site,
+                        'meta':     {'site': site_label, 'lat': lat, 'lon': lon},
+                    }
+                except Exception as exc:
+                    errors.append(f'**{site_label}:** {exc}')
+            bar.progress(1.0, text='Done.')
+            bar.empty()
+            st.session_state['multi_results'] = multi_results
+            for e in errors:
+                st.error(e)
+            n_ok = len(multi_results)
+            st.success(f'✅ {n_ok}/{len(all_sites)} runs analysed successfully.')
 
-            shared_kw: dict = {}
-            if signal_type == 'volume':
-                if soil_texture:
-                    shared_kw['soil_texture'] = soil_texture
-                elif alpha_vg and n_vg:
-                    shared_kw['alpha'] = alpha_vg
-                    shared_kw['n']     = n_vg
+        # ── Show results once analysis has been run ───────────────────────
+        if st.session_state.get('multi_results'):
+            multi_results = st.session_state['multi_results']
+            done_sites    = sorted(multi_results.keys())
 
+            st.divider()
+
+            # ── 1. Summary table ──────────────────────────────────────────
+            st.subheader('Summary — All Runs')
+            all_summary_rows: list[dict] = []
+            for s in done_sites:
+                all_summary_rows.extend(
+                    _summary_rows_for(s, multi_results[s]['result'])
+                )
+            summary_df = pd.DataFrame(all_summary_rows)
+            st.dataframe(summary_df, width='stretch', height=300)
+            st.download_button(
+                '⬇ Download summary CSV',
+                data=summary_df.to_csv(index=False).encode(),
+                file_name='infilt_multi_summary.csv',
+                mime='text/csv',
+            )
+
+            st.divider()
+
+            # ── 2. Cross-run comparison charts ────────────────────────────
+            st.subheader('Cross-Run Comparison')
+
+            # Ks_est per site (bar)
+            ks_rows = [
+                {'Site': s,
+                 'Ks_est [mm/h]': round(multi_results[s]['result'].kh.Ks_est * 36000, 2)}
+                for s in done_sites
+                if multi_results[s]['result'].kh
+            ]
+            if ks_rows:
+                fig_ks = px.bar(
+                    pd.DataFrame(ks_rows), x='Site', y='Ks_est [mm/h]',
+                    color='Site', text='Ks_est [mm/h]',
+                    title='Ksat estimate (Gardner+VG mean) per site',
+                    height=380,
+                )
+                fig_ks.update_traces(textposition='outside')
+                fig_ks.update_layout(showlegend=False, xaxis_tickangle=-35)
+                st.plotly_chart(fig_ks, width='stretch')
+
+            # K_Wood vs suction — one line per site
+            kw_rows = []
+            for s in done_sites:
+                for r in multi_results[s]['result'].results:
+                    if r.K_wooding_cm_s:
+                        kw_rows.append({
+                            'Site': s,
+                            'Suction [mmWC]': int(r.suction_mm),
+                            'K_Wood [mm/h]': round(r.K_wooding_cm_s * 36000, 3),
+                        })
+            if kw_rows:
+                fig_kw = px.line(
+                    pd.DataFrame(kw_rows),
+                    x='Suction [mmWC]', y='K_Wood [mm/h]',
+                    color='Site', markers=True,
+                    title='K Wooding vs. Suction — all sites',
+                    height=400,
+                )
+                st.plotly_chart(fig_kw, width='stretch')
+
+            st.divider()
+
+            # ── 3. Per-run detail (selector) ──────────────────────────────
+            st.subheader('Inspect Individual Run')
+            sel_run = st.selectbox(
+                'Select run', done_sites, key='multi_sel_run'
+            )
+            v = multi_results[sel_run]
+            _show_run_detail(
+                sel_run, v['result'], v['meta'], v['df'],
+                v['warnings'], key_suffix=f'multi_{sel_run}'
+            )
+
+            st.divider()
+
+            # ── 4. Save all ───────────────────────────────────────────────
+            if st.button('💾 Save ALL runs to results log',
+                         key='save_all_multi', width='content'):
+                saved, failed = 0, []
+                for s in done_sites:
+                    try:
+                        _append_to_log(multi_results[s]['result'], multi_results[s]['meta'])
+                        saved += 1
+                    except Exception as exc:
+                        failed.append(f'{s}: {exc}')
+                if saved:
+                    st.success(f'Saved {saved} run(s) → '
+                               f'{RESULTS_FILE.relative_to(Path(__file__).parent)}')
+                for f in failed:
+                    st.error(f)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SINGLE-RUN PATH
+    # ════════════════════════════════════════════════════════════════════════
+    elif has_single:
+        df_tidy = _prepare(st.session_state['df_tidy'])
+
+        run_col, _ = st.columns([1, 4])
+        if run_col.button('▶  Run Analysis', type='primary', width='stretch'):
             with st.spinner('Running campaign analysis …'):
                 try:
-                    with warnings.catch_warnings(record=True) as caught:
-                        warnings.simplefilter('always')
-                        result = Campaign.from_dataframe(
-                            df_tidy,
-                            site=site_name,
-                            hood_preset=preset_run     if signal_type == 'level'  else None,
-                            minidisk_preset=preset_run if signal_type == 'volume' else None,
-                            **shared_kw,
-                        ).run()
-
-                    warn_msgs = [str(w.message) for w in caught
-                                 if issubclass(w.category, UserWarning)]
+                    result, warn_msgs = _run_campaign(df_tidy, site_name)
                     st.session_state['result']   = result
                     st.session_state['warnings'] = warn_msgs
-                    st.session_state['meta']     = {
-                        'site': site_name, 'lat': lat, 'lon': lon,
-                    }
+                    st.session_state['meta']     = {'site': site_name, 'lat': lat, 'lon': lon}
                     st.success('Analysis complete.')
                 except Exception as exc:
                     st.error(f'Analysis failed: {exc}')
 
         if 'result' in st.session_state:
-            result = st.session_state['result']
-            meta   = st.session_state['meta']
-
-            # Warnings
-            for msg in st.session_state.get('warnings', []):
-                st.warning(msg)
-
-            # ── Results table ─────────────────────────────────────────────
-            st.subheader('Results Table')
-            st.code(result.table(), language=None)
-
-            # ── Figure ───────────────────────────────────────────────────
-            st.subheader('Campaign Figure')
-            fig = result.figure()
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.divider()
-
-            # ── Actions ──────────────────────────────────────────────────
-            act1, act2 = st.columns(2)
-
-            # PDF report
-            with act1:
-                if st.button('📄 Generate PDF Report', use_container_width=True):
-                    with st.spinner('Rendering PDF …'):
-                        try:
-                            pdf_bytes = _generate_pdf(result, meta, df_tidy)
-                            fname = (
-                                f'infilt_{site_name.replace(" ","_")}_'
-                                f'{datetime.now().strftime("%Y%m%d")}.pdf'
-                            )
-                            st.download_button(
-                                '⬇ Download PDF',
-                                data=pdf_bytes,
-                                file_name=fname,
-                                mime='application/pdf',
-                                use_container_width=True,
-                            )
-                        except Exception as exc:
-                            st.error(f'PDF generation failed: {exc}')
-
-            # Save to log
-            with act2:
-                if st.button('💾 Save to results log', use_container_width=True):
-                    try:
-                        _append_to_log(result, meta)
-                        st.success(f'Saved → {RESULTS_FILE.relative_to(Path(__file__).parent)}')
-                    except Exception as exc:
-                        st.error(f'Save failed: {exc}')
+            _show_run_detail(
+                st.session_state['meta']['site'],
+                st.session_state['result'],
+                st.session_state['meta'],
+                df_tidy,
+                st.session_state.get('warnings', []),
+                key_suffix='single',
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -557,31 +1118,232 @@ with tab_results:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_history:
+    import plotly.graph_objects as go
+    import plotly.express as px
+
     st.subheader('Results Log')
 
     if not RESULTS_FILE.exists():
-        st.info('No results saved yet.  Run an analysis and click "Save to results log".')
+        st.info('No results saved yet. Run an analysis and click "Save to results log".')
     else:
         log_df = pd.read_csv(RESULTS_FILE)
-        st.markdown(f'`{RESULTS_FILE.name}` — **{len(log_df)} entries** from '
-                    f'{log_df["site"].nunique()} site(s)')
 
-        # Filter by site
-        sites = ['All'] + sorted(log_df['site'].unique())
-        sel_site = st.selectbox('Filter by site', sites)
-        if sel_site != 'All':
-            log_df = log_df[log_df['site'] == sel_site]
-
-        st.dataframe(log_df, use_container_width=True)
-
-        # Download log
-        csv_bytes = log_df.to_csv(index=False).encode()
-        st.download_button(
-            '⬇ Download filtered log (CSV)',
-            data=csv_bytes,
-            file_name='infilt_results_log.csv',
-            mime='text/csv',
+        st.markdown(
+            f'`{RESULTS_FILE.name}` — **{len(log_df)} rows** · '
+            f'**{log_df["site"].nunique()} site(s)** · '
+            f'**{log_df["suction_mm"].nunique()} tension level(s)**'
         )
+
+        # ── Site selector ─────────────────────────────────────────────────
+        site_opts   = ['All sites'] + sorted(log_df['site'].unique().tolist())
+        sel_h_site  = st.selectbox('Select site', site_opts, key='hist_site')
+        view_df     = log_df if sel_h_site == 'All sites' else log_df[log_df['site'] == sel_h_site].copy()
+
+        # ── Data table ────────────────────────────────────────────────────
+        with st.expander('📋 Raw data table', expanded=(sel_h_site != 'All sites')):
+            st.dataframe(view_df, width='stretch')
+            st.download_button(
+                '⬇ Download CSV',
+                data=view_df.to_csv(index=False).encode(),
+                file_name='infilt_results_log.csv',
+                mime='text/csv',
+                key='hist_dl',
+            )
+
+        st.divider()
+
+        # ════════════════════════════════════════════════════════════════
+        # SINGLE SITE — detailed charts
+        # ════════════════════════════════════════════════════════════════
+        if sel_h_site != 'All sites' and not view_df.empty:
+            st.subheader(f'📊 Charts — {sel_h_site}')
+
+            tensions_avail = sorted(view_df['suction_mm'].dropna().unique())
+
+            # 1. Hydraulic conductivity vs suction
+            k_methods = {
+                'K_wooding_mmh': ('K Wooding', '#1f77b4'),
+                'K_ols_mmh':     ('K OLS',     '#ff7f0e'),
+                'K_su_mmh':      ('K Su',      '#2ca02c'),
+            }
+            k_present = [c for c in k_methods if c in view_df.columns]
+            if k_present:
+                fig_k = go.Figure()
+                for col in k_present:
+                    label, color = k_methods[col]
+                    sub = view_df[['suction_mm', col]].dropna()
+                    fig_k.add_trace(go.Scatter(
+                        x=sub['suction_mm'], y=sub[col],
+                        mode='lines+markers', name=label,
+                        line=dict(color=color),
+                        marker=dict(color=color, size=9),
+                    ))
+                fig_k.update_layout(
+                    title='Hydraulic Conductivity vs. Suction',
+                    xaxis_title='Suction [mmWC]',
+                    yaxis_title='K [mm/h]',
+                    legend_title='Method',
+                    height=400,
+                )
+                st.plotly_chart(fig_k, width='stretch')
+
+            # 2. q_ss bar chart with error bars
+            if 'q_ss_mmh' in view_df.columns:
+                sub_q = view_df[['suction_mm', 'q_ss_mmh', 'q_ss_se_mmh']].dropna(subset=['q_ss_mmh'])
+                if not sub_q.empty:
+                    fig_q = go.Figure(go.Bar(
+                        x=sub_q['suction_mm'].astype(str) + ' mmWC',
+                        y=sub_q['q_ss_mmh'],
+                        error_y=dict(
+                            type='data',
+                            array=sub_q['q_ss_se_mmh'].fillna(0).tolist(),
+                            visible=True,
+                        ),
+                        marker_color='#4C72B0',
+                        text=sub_q['q_ss_mmh'].round(2),
+                        textposition='outside',
+                    ))
+                    fig_q.update_layout(
+                        title='Steady-State Flux (q_ss) per Suction Level',
+                        xaxis_title='Suction',
+                        yaxis_title='q_ss [mm/h]',
+                        height=360,
+                    )
+                    st.plotly_chart(fig_q, width='stretch')
+
+            # 3. Ksat estimates comparison
+            ks_map = {
+                'Ks_gardner_mmh': ('Ks Gardner', '#5599cc'),
+                'Ks_vg_mmh':      ('Ks Mualem-VG', '#88bb44'),
+                'Ks_est_mmh':     ('Ks estimate', '#ee8833'),
+            }
+            ks_present = [c for c in ks_map if c in view_df.columns]
+            if ks_present:
+                ks_vals  = {ks_map[c][0]: view_df[c].dropna().mean() for c in ks_present}
+                ks_colors = [ks_map[c][1] for c in ks_present]
+                fig_ks = go.Figure(go.Bar(
+                    x=list(ks_vals.keys()),
+                    y=list(ks_vals.values()),
+                    marker_color=ks_colors,
+                    text=[f'{v:.2f}' for v in ks_vals.values()],
+                    textposition='outside',
+                ))
+                fig_ks.update_layout(
+                    title='Ksat Estimates',
+                    yaxis_title='Ks [mm/h]',
+                    height=340,
+                )
+                st.plotly_chart(fig_ks, width='stretch')
+
+            # 4. R² quality indicator per tension
+            if 'r2_ols' in view_df.columns:
+                sub_r2 = view_df[['suction_mm', 'r2_ols']].dropna()
+                if not sub_r2.empty:
+                    fig_r2 = go.Figure(go.Bar(
+                        x=sub_r2['suction_mm'].astype(str) + ' mmWC',
+                        y=sub_r2['r2_ols'],
+                        marker_color=[
+                            '#2ecc71' if v >= 0.95 else '#f39c12' if v >= 0.85 else '#e74c3c'
+                            for v in sub_r2['r2_ols']
+                        ],
+                        text=sub_r2['r2_ols'].round(4),
+                        textposition='outside',
+                    ))
+                    fig_r2.add_hline(y=0.95, line_dash='dash', line_color='green',
+                                     annotation_text='R²=0.95')
+                    fig_r2.update_layout(
+                        title='OLS Fit Quality (R²) per Suction Level',
+                        xaxis_title='Suction',
+                        yaxis_title='R²',
+                        yaxis_range=[0, 1.05],
+                        height=320,
+                    )
+                    st.plotly_chart(fig_r2, width='stretch')
+
+        # ════════════════════════════════════════════════════════════════
+        # ALL SITES — cross-site comparison charts
+        # ════════════════════════════════════════════════════════════════
+        elif sel_h_site == 'All sites' and not view_df.empty:
+            st.subheader('📊 Cross-Site Comparison')
+
+            # 1. Ks_est per site
+            if 'Ks_est_mmh' in view_df.columns:
+                ks_site = (
+                    view_df.dropna(subset=['Ks_est_mmh'])
+                    .groupby('site')['Ks_est_mmh']
+                    .mean()
+                    .reset_index()
+                    .rename(columns={'Ks_est_mmh': 'Ks_est [mm/h]'})
+                    .sort_values('Ks_est [mm/h]', ascending=False)
+                )
+                if not ks_site.empty:
+                    fig_ks_all = px.bar(
+                        ks_site, x='site', y='Ks_est [mm/h]',
+                        color='site', text='Ks_est [mm/h]',
+                        title='Mean Ksat estimate per site',
+                        height=400,
+                    )
+                    fig_ks_all.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+                    fig_ks_all.update_layout(showlegend=False, xaxis_tickangle=-35)
+                    st.plotly_chart(fig_ks_all, width='stretch')
+
+            # 2. K_Wood vs suction — one line per site
+            if 'K_wooding_mmh' in view_df.columns:
+                sub_kw = view_df[['site', 'suction_mm', 'K_wooding_mmh']].dropna()
+                if not sub_kw.empty:
+                    fig_kw_all = px.line(
+                        sub_kw.sort_values(['site', 'suction_mm']),
+                        x='suction_mm', y='K_wooding_mmh',
+                        color='site', markers=True,
+                        title='K Wooding vs. Suction — all sites',
+                        labels={'suction_mm': 'Suction [mmWC]',
+                                'K_wooding_mmh': 'K Wooding [mm/h]'},
+                        height=420,
+                    )
+                    st.plotly_chart(fig_kw_all, width='stretch')
+
+            # 3. q_ss heatmap: sites × suctions
+            if 'q_ss_mmh' in view_df.columns:
+                pivot = (
+                    view_df[['site', 'suction_mm', 'q_ss_mmh']]
+                    .dropna()
+                    .pivot_table(index='site', columns='suction_mm',
+                                 values='q_ss_mmh', aggfunc='mean')
+                )
+                if not pivot.empty:
+                    fig_hm = px.imshow(
+                        pivot,
+                        text_auto='.2f',
+                        color_continuous_scale='Blues',
+                        title='q_ss [mm/h] — Sites × Suctions',
+                        labels={'x': 'Suction [mmWC]', 'y': 'Site',
+                                'color': 'q_ss [mm/h]'},
+                        aspect='auto',
+                        height=max(300, 60 * len(pivot)),
+                    )
+                    st.plotly_chart(fig_hm, width='stretch')
+
+            # 4. R² heatmap
+            if 'r2_ols' in view_df.columns:
+                pivot_r2 = (
+                    view_df[['site', 'suction_mm', 'r2_ols']]
+                    .dropna()
+                    .pivot_table(index='site', columns='suction_mm',
+                                 values='r2_ols', aggfunc='mean')
+                )
+                if not pivot_r2.empty:
+                    fig_r2_all = px.imshow(
+                        pivot_r2,
+                        text_auto='.3f',
+                        color_continuous_scale='RdYlGn',
+                        range_color=[0.7, 1.0],
+                        title='OLS R² — Sites × Suctions',
+                        labels={'x': 'Suction [mmWC]', 'y': 'Site', 'color': 'R²'},
+                        aspect='auto',
+                        height=max(300, 60 * len(pivot_r2)),
+                    )
+                    st.plotly_chart(fig_r2_all, width='stretch')
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — Methods

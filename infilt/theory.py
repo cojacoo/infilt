@@ -593,7 +593,15 @@ def fit_kosugi_K(
         return np.array([compute_K_kosugi(hi, Ks, hm, sigma, L) for hi in h_vec])
 
     Ks0 = float(K[np.argmax(h)])
-    hm0 = float(np.exp(np.mean(np.log(np.abs(h)))))   # geometric mean of |h|
+    # Geometric mean of |h|, excluding h=0 (ponded) points: log(0) = -inf
+    # would otherwise pull hm0 to 0.0, which lies below the lower bound
+    # (1e-3) on hm and makes curve_fit reject the initial guess outright.
+    h_nonzero = h[h != 0.0]
+    if h_nonzero.size > 0:
+        hm0 = float(np.exp(np.mean(np.log(np.abs(h_nonzero)))))
+    else:
+        hm0 = 1.0  # fallback; should not occur since h=0 alone can't be fit
+    hm0 = min(max(hm0, 1e-3), 1_000.0)  # keep strictly within bounds
     p0 = [Ks0, hm0, 1.2]
     bounds = ([0.0, 1e-3, 0.1], [np.inf, 1_000.0, 5.0])
     popt, _ = curve_fit(_model, h, K, p0=p0, bounds=bounds, maxfev=10_000)

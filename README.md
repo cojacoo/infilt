@@ -25,6 +25,20 @@ streamlit run app.py
 
 Upload or paste a table with columns `suction`, `time`, `signal`, select instrument and
 signal type, enter site coordinates, and run the full analysis.
+Time may be given in seconds or as `HH:MM:SS` / `MM:SS`.
+
+A wide multi-site field sheet can be loaded too (*File with multiple Raw Data*): column
+pairs `Zeit` / `Wasserstand`, with a 4-row header per pair — site, USDA texture, suction [cm],
+column label. Each site is analysed as its own campaign with its own texture.
+
+Sidebar options applied to all loaded data (live, also after loading):
+
+- **Mini-disk reading → Water level in tube**: converts levels to mL via the tube
+  cross-section [cm²] (measure on the device) and level unit (mm/cm).
+- **Suction offset [cm]**: added to every suction setting (device-specific, e.g. 0.5 cm
+  if setting 0 actually applies 0.5 cm at the disk).
+
+The *Data Check* tab shows the converted data per site/tension and lets you exclude runs.
 Results are displayed interactively, exportable as a PDF report, and logged to
 `data/results_log.csv`.
 
@@ -82,6 +96,8 @@ Three fitting methods: **OLS** (β = 0.5 fixed), **Su method** (free β), and
 
 K(h₀) = C₂ / A₂, where A₂ is the geometry correction of Zhang (1997) for n ≥ 1.35,
 or Dohnal et al. (2010) for n < 1.35.
+A₂ is calibrated for the Philip C₂, so K from the Su / Mittag-Leffler gravity terms is
+indicative only. Su needs ≥ 5 and ML ≥ 6 readings per run (flag `FEW_PTS` otherwise).
 van Genuchten parameters (α, n) from ROSETTA (Schaap et al. 2001 in Dohnal et al. 2010) by texture class or manual entry.
 
 ### K(h) model fitting and Ksat
@@ -92,7 +108,9 @@ All valid (h₀, K) pairs are fitted to three models:
 - **Mualem–van Genuchten:** K(h) = Ks · Seˡ · [1−(1−Se^(1/m))^m]²
 - **Mualem–Kosugi:** based on log-normal pore-size distribution
 
-**Ksat** is estimated as the mean of the Gardner and VG model Ks values at h = 0.
+Each model is fitted separately; VG and Kosugi (3 parameters) need ≥ 4 tensions,
+otherwise only Gardner is fitted.
+**Ksat** is estimated as the mean of the Gardner and (if fitted) VG model Ks values at h = 0.
 Kosugi Ks is reported separately.
 
 ---

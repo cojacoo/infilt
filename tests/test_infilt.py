@@ -407,7 +407,9 @@ class TestCampaignLevel:
         result = Campaign(self._runs()).run()
         assert result.kh is not None
         assert result.kh.Ks_g > 0
-        assert result.kh.Ks_vg > 0
+        # 3 tensions: 3-parameter VG/Kosugi are underdetermined → skipped
+        assert result.kh.Ks_vg is None and result.kh.Ks_ko is None
+        assert result.kh.Ks_est == result.kh.Ks_g
 
     def test_str_no_K_wooding_shows_na(self):
         with warnings.catch_warnings(record=True): warnings.simplefilter('always')
@@ -445,3 +447,45 @@ class TestCampaignLevel:
         K2 = sorted(r.K_wooding_cm_s for r in r2.results if r.K_wooding_cm_s)
         for a, b in zip(K1, K2):
             assert abs(a - b) / a < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# Review fixes (2026-10)
+# ---------------------------------------------------------------------------
+
+def _md_runs(suctions_k, n_pts=20, texture='loam'):
+    from infilt import MINIDISK_STUDENT
+    t = np.linspace(0, 600, n_pts)
+    return [InfiltrationRun(t, 50 - k * t - 0.3 * np.sqrt(t), s,
+                            **MINIDISK_STUDENT, soil_texture=texture)
+            for s, k in suctions_k]
+
+
+def test_kosugi_fit_accepts_h0_zero():
+    from infilt import fit_kosugi_K
+    Ks, hm, sig = fit_kosugi_K([0.0, -1.0, -3.0, -5.0], [1e-3, 5e-4, 2e-4, 8e-5])
+    assert Ks > 0 and hm > 0 and sig > 0
+
+
+def test_campaign_with_ponded_run_keeps_kh():
+    with warnings.catch_warnings(record=True): warnings.simplefilter('always')
+    res = Campaign(_md_runs([(0, .03), (10, .02), (30, .01), (50, .005)])).run()
+    assert res.kh is not None
+    assert res.kh.Ks_vg is not None and res.kh.Ks_ko is not None
+
+
+def test_dohnal_applied_for_low_n():
+    from infilt import compute_K
+    with warnings.catch_warnings(record=True): warnings.simplefilter('always')
+    r = _md_runs([(30, .02)], texture='clay_loam')[0].run()   # n = 1.31
+    assert r.fit_formula == 'dohnal2010'
+    K_expected, _ = compute_K(r.ols.C2, r.alpha, r.n, 2.5, -3.0)
+    assert abs(r.K_ols_cm_s - K_expected) / K_expected < 1e-12
+
+
+def test_few_points_skip_su_ml():
+    with warnings.catch_warnings(record=True): warnings.simplefilter('always')
+    r = _md_runs([(10, .02)], n_pts=4)[0].run()
+    assert r.K_ols_cm_s > 0
+    assert r.K_su_cm_s == 0.0 and r.K_ml_cm_s is None
+    assert any(f.startswith('FEW_PTS') for f in r.flags)

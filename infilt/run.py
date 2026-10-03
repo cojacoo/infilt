@@ -28,7 +28,7 @@ import numpy as np
 
 from .fitting import fit_philip, PhilipFit
 from .steady import detect_steady_state, SteadyStateResult
-from .theory import compute_A2, compute_K, compute_theta_vg, compute_A1
+from .theory import compute_K, compute_theta_vg, compute_A1
 from .soil_db import get_vg_params
 
 # ---------------------------------------------------------------------------
@@ -39,6 +39,11 @@ MINIDISK_STUDENT: dict = dict(disk_radius_mm=25.0,  signal_type='volume')
 MINIDISK_METER:   dict = dict(disk_radius_mm=22.5,  signal_type='volume')
 HOOD_IL2700:      dict = dict(disk_radius_mm=124.0, signal_type='level',
                                reservoir_area_cm2=23.0)
+
+# Minimum data points before the free-exponent fits are trusted
+# (Su: 3 params, ML: 4 params; need residual degrees of freedom).
+MIN_PTS_SU = 5
+MIN_PTS_ML = 6
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +80,7 @@ class InfiltrationResult:
 
     # K from Philip [cm s⁻¹]
     K_ols_cm_s: float
-    K_su_cm_s: float
+    K_su_cm_s: float             # 0.0 when unavailable (no VG params, too few points)
     K_ml_cm_s: Optional[float]   # None when ml degenerate
 
     # Wooding steady-state (set by Campaign)
@@ -355,12 +360,20 @@ class InfiltrationRun:
         K_ols = K_su = 0.0
         K_ml: Optional[float] = None
 
+        n_pts = len(self.time_s)
+        su_ok = n_pts >= MIN_PTS_SU
+        ml_ok = n_pts >= MIN_PTS_ML
+        if not (su_ok and ml_ok):
+            flags.append(f'FEW_PTS:{n_pts}')
+
         if a is not None and n is not None:
-            A2 = compute_A2(a, n, self.r0_cm, self.h0_cm)
+            # compute_K picks Zhang (1997) or Dohnal et al. (2010) by n
+            def _K(C2: float) -> float:
+                return compute_K(C2, a, n, self.r0_cm, self.h0_cm)[0] if C2 > 0 else 0.0
             _, formula = compute_K(max(ols.C2, 1e-20), a, n, self.r0_cm, self.h0_cm)
-            K_ols = float(ols.C2 / A2) if ols.C2 > 0 else 0.0
-            K_su  = float(su.C2  / A2) if su.C2  > 0 else 0.0
-            K_ml  = float(ml.C2  / A2) if (ml.C2 > 0 and not ml.degenerate) else None
+            K_ols = _K(ols.C2)
+            K_su  = _K(su.C2) if su_ok else 0.0
+            K_ml  = (_K(ml.C2) or None) if (ml_ok and not ml.degenerate) else None
         else:
             flags.append('NO_VG_PARAMS')
 
@@ -372,7 +385,7 @@ class InfiltrationRun:
             flags.append('SU_DEGEN')
         if ml.degenerate:
             flags.append('ML_DEGEN')
-        if not su.degenerate and abs(su.beta - 0.5) > 0.1:
+        if su_ok and not su.degenerate and abs(su.beta - 0.5) > 0.1:
             flags.append(f'ANOM_β:{su.beta:.3f}')
 
         sorptivity = None
