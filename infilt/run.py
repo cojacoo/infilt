@@ -381,6 +381,9 @@ class InfiltrationRun:
             flags.append(f'LOW_R2:{ols.r2:.3f}')
         if ols.C2 <= 0:
             flags.append('NEGATIVE_K')
+        if ols.C1 < 0:
+            # rate increasing with time — disturbance or too coarse readings
+            flags.append('NEG_C1')
         if su.degenerate:
             flags.append('SU_DEGEN')
         if ml.degenerate:

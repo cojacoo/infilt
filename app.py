@@ -938,8 +938,29 @@ with tab_results:
                 'SS%':            f'{r.ss.conv_frac:.0%}' if r.ss else None,
                 'Ks_est [mm/h]':  round(r_obj.kh.Ks_est * 36000, 2)
                                   if r_obj.kh else None,
+                'Flags':          ' '.join(r.flags) or '✓',
             })
         return rows
+
+    def _table(rows: list[dict]) -> pd.DataFrame:
+        """Rows → DataFrame without columns that are empty for every run
+        (e.g. hood-only q_ss / Wooding columns for mini-disk data)."""
+        return pd.DataFrame(rows).dropna(axis=1, how='all')
+
+    def _kh_table(kh) -> pd.DataFrame:
+        mmh = lambda k: round(k * 36000, 2) if k is not None else None
+        return pd.DataFrame([
+            {'Model': 'Gardner', 'Ks [mm/h]': mmh(kh.Ks_g),
+             'Parameters': f'αG = {kh.aG:.4f} 1/cm'},
+            {'Model': 'Mualem-VG', 'Ks [mm/h]': mmh(kh.Ks_vg),
+             'Parameters': f'α = {kh.alpha_vg:.4f} 1/cm, n = {kh.n_vg:.3f}'
+                           if kh.Ks_vg is not None else 'not fitted (needs ≥ 4 tensions)'},
+            {'Model': 'Mualem-Kosugi', 'Ks [mm/h]': mmh(kh.Ks_ko),
+             'Parameters': f'hm = {kh.hm_ko:.3f} cm, σ = {kh.sigma_ko:.3f}'
+                           if kh.Ks_ko is not None else 'not fitted (needs ≥ 4 tensions)'},
+            {'Model': 'Ksat estimate (Gardner + VG mean)', 'Ks [mm/h]': mmh(kh.Ks_est),
+             'Parameters': ''},
+        ])
 
     def _show_run_detail(site_label: str, result, meta: dict, df_site: pd.DataFrame,
                          warn_msgs: list[str], key_suffix: str):
@@ -949,13 +970,27 @@ with tab_results:
 
         st.markdown(f'#### 📍 {site_label}')
 
-        # Results table
-        st.subheader('Results Table')
-        st.code(result.table(), language=None)
-
-        # Campaign figure
-        st.subheader('Campaign Figure')
         st.plotly_chart(result.figure(), width='stretch')
+        st.caption(
+            'A: infiltration rate per run. Hood: smoothed rate, steady-state band and '
+            'Wooding K. Mini-disk: rate between readings (□), Philip rate (dashed) and its '
+            'gravity asymptote C₂ (dotted), K = C₂/A₂. '
+            'B: K per tension and fitted K(h) curves; ◆ = Ksat at h = 0.'
+        )
+
+        st.markdown('**Per tension**')
+        st.dataframe(
+            _table(_summary_rows_for(site_label, result)).drop(
+                columns=['Site', 'Ks_est [mm/h]'], errors='ignore'),
+            width='stretch', hide_index=True,
+        )
+        if result.kh:
+            st.markdown('**K(h) fits and Ksat**')
+            st.dataframe(_kh_table(result.kh), width='stretch', hide_index=True)
+        else:
+            st.info('K(h) fit needs ≥ 2 valid tensions.')
+        with st.expander('Full text table (all methods, steady-state details, A₂ parameters)'):
+            st.code(result.table(), language=None)
 
         st.divider()
         act1, act2 = st.columns(2)
@@ -1041,8 +1076,8 @@ with tab_results:
                 all_summary_rows.extend(
                     _summary_rows_for(s, multi_results[s]['result'])
                 )
-            summary_df = pd.DataFrame(all_summary_rows)
-            st.dataframe(summary_df, width='stretch', height=300)
+            summary_df = _table(all_summary_rows)
+            st.dataframe(summary_df, width='stretch', height=300, hide_index=True)
             st.download_button(
                 '⬇ Download summary CSV',
                 data=summary_df.to_csv(index=False).encode(),

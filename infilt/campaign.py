@@ -261,14 +261,14 @@ class CampaignResult:
 
     def figure(self):
         """
-        Plotly figure, one panel per instrument type plus K(h).
+        Plotly figure with two panels.
 
-        Hood panel     : infiltration rate q [mm/h] vs time [min] with
-                         steady-state band and Wooding K per tension.
-        Mini-disk panel: cumulative I [mm] vs √t [s^½] with Philip OLS fit
-                         and K(h₀) (Zhang / Dohnal A₂) per tension.
-        K(h) panel     : primary K per tension, Gardner / Mualem-VG /
-                         Mualem-Kosugi curves, Ksat at h = 0.
+        Panel A : infiltration rate q [mm/h] vs time [min] for every run.
+          - hood     : steady-state band, q_ss and Wooding K
+          - mini-disk: Philip rate dI/dt = C₁/(2√t) + C₂ (dashed), its
+                       gravity asymptote C₂ and K = C₂/A₂ (Zhang / Dohnal)
+        Panel B : primary K per tension, Gardner / Mualem-VG /
+                  Mualem-Kosugi curves, Ksat at h = 0.
         """
         try:
             import plotly.graph_objects as go
@@ -285,27 +285,15 @@ class CampaignResult:
         has_level  = any(r.signal_type == 'level'  for r in sorted_res)
         has_volume = any(r.signal_type == 'volume' for r in sorted_res)
 
-        titles, col_of = [], {}
-        if has_level:
-            col_of['level'] = len(titles) + 1
-            titles.append('Hood: infiltration rate q(t)')
-        if has_volume:
-            col_of['volume'] = len(titles) + 1
-            titles.append('Mini-disk: cumulative I(√t), Philip fit')
-        col_kh = len(titles) + 1
-        titles.append('K(h) — Gardner / Mualem-VG / Mualem-Kosugi')
-        titles = [f'{chr(65 + i)})  {t}' for i, t in enumerate(titles)]
-
-        fig = make_subplots(rows=1, cols=len(titles), subplot_titles=titles)
-        # Explicit domains leave room right of the hood panel for the q_ss
-        # annotations; legend sits at 90–100 %.
-        domains = {
-            1: [[0.00, 0.62]],
-            2: [[0.00, 0.40], [0.62, 0.88]],
-            3: [[0.00, 0.26], [0.39, 0.61], [0.69, 0.88]],
-        }[len(titles)]
-        for c, dom in enumerate(domains, start=1):
-            fig.update_xaxes(domain=dom, row=1, col=c)
+        col_rate, col_kh = 1, 2
+        fig = make_subplots(rows=1, cols=2, subplot_titles=(
+            'A)  Infiltration rate q(t)',
+            'B)  K(h) — Gardner / Mualem-VG / Mualem-Kosugi',
+        ))
+        # Explicit domains: A 0–40 %, gap 40–65 % for the q annotations,
+        # B 65–88 %, legend 90–100 %
+        fig.update_xaxes(domain=[0.00, 0.40], row=1, col=1)
+        fig.update_xaxes(domain=[0.65, 0.88], row=1, col=2)
         fig.update_layout(
             template='none',
             title_text=f'Tension Infiltrometer Campaign — {self.site or ""}',
@@ -317,13 +305,12 @@ class CampaignResult:
         def _label(res) -> str:
             return f'{res.suction_mm:g} mm · {"hood" if res.signal_type == "level" else "disk"}'
 
-        # ── Raw-data panels ────────────────────────────────────────────────
+        # ── Panel A: infiltration rate q(t) ──────────────────────────────
         for i, res in enumerate(sorted_res):
             col = PALETTE[i % len(PALETTE)]
             label = _label(res)
 
             if res.signal_type == 'level' and res.rate_cm_s is not None:
-                c = col_of['level']
                 t_min = res.time_s / 60.0
                 q_mmh = res.rate_cm_s * 36_000
                 fig.add_trace(
@@ -333,7 +320,7 @@ class CampaignResult:
                         line=dict(color=col, width=2),
                         legendgroup=label,
                     ),
-                    row=1, col=c,
+                    row=1, col=col_rate,
                 )
                 if res.ss is not None and res.ss.mask.any():
                     fig.add_trace(
@@ -346,76 +333,87 @@ class CampaignResult:
                             legendgroup=label,
                             showlegend=False,
                         ),
-                        row=1, col=c,
+                        row=1, col=col_rate,
                     )
                 if res.ss is not None:
                     q_ss_mmh = res.ss.q_ss * 36_000
                     se_mmh   = res.ss.q_ss_se * 36_000
-                    K_w_mmh  = (res.K_wooding_cm_s * 36_000
-                                if res.K_wooding_cm_s else None)
-                    ann = (
-                        f'q = {q_ss_mmh:.2f} ± {se_mmh:.2f} mm/h'
-                        f'<br>K = {K_w_mmh:.2f} mm/h'
-                        if K_w_mmh
-                        else f'q = {q_ss_mmh:.2f} ± {se_mmh:.2f} mm/h'
-                    )
+                    ann = f'q = {q_ss_mmh:.2f} ± {se_mmh:.2f} mm/h'
+                    if res.K_wooding_cm_s:
+                        ann += f'<br>K = {res.K_wooding_cm_s * 36_000:.2f} mm/h (Wooding)'
                     fig.add_hrect(
                         y0=q_ss_mmh - se_mmh,
                         y1=q_ss_mmh + se_mmh,
                         fillcolor=col, opacity=0.12,
                         line_width=0,
-                        row=1, col=c,
+                        row=1, col=col_rate,
                     )
                     fig.add_hline(
                         y=q_ss_mmh,
                         line_dash='dash', line_color=col,
-                        opacity=0.7, row=1, col=c,
+                        opacity=0.7, row=1, col=col_rate,
                         annotation_text=ann,
                         annotation_font_size=9,
                         annotation_position='right',
                     )
 
             elif res.signal_type == 'volume' and res.I_cm_obs is not None:
-                c = col_of['volume']
-                sqt = np.sqrt(np.maximum(res.time_s, 0))      # √s
+                # Measured: rate between consecutive readings (no smoothing —
+                # mini-disk runs are short and coarsely resolved).
+                t, I = res.time_s, res.I_cm_obs
+                dt = np.diff(t)
+                ok = dt > 0
+                t_mid = ((t[1:] + t[:-1]) / 2)[ok]
+                q_obs = (np.diff(I)[ok] / dt[ok]) * 36_000
                 fig.add_trace(
                     go.Scatter(
-                        x=sqt, y=res.I_cm_obs * 10,
+                        x=t_mid / 60.0, y=q_obs,
                         mode='markers', name=label,
                         marker=dict(color=col, size=8, symbol='square'),
                         legendgroup=label,
                     ),
-                    row=1, col=c,
+                    row=1, col=col_rate,
                 )
-                fig.add_trace(
-                    go.Scatter(
-                        x=sqt, y=res.ols.I_fit * 10,
-                        mode='lines', name=f'{label} Philip fit',
-                        line=dict(color=col, width=1.5, dash='dash'),
-                        legendgroup=label, showlegend=False,
-                    ),
-                    row=1, col=c,
-                )
-                formula = {'zhang1997': 'Zhang', 'dohnal2010': 'Dohnal'}.get(
-                    res.fit_formula, res.fit_formula)
-                K_txt = (f'K = {res.K_ols_mmh:.2f} mm/h ({formula})'
-                         if res.K_ols_cm_s > 0 else 'K n/a')
-                fig.add_trace(
-                    go.Scatter(
-                        x=[sqt[-1]], y=[res.ols.I_fit[-1] * 10],
-                        mode='text', text=[f'{K_txt}<br>R² = {res.ols.r2:.3f}'],
-                        textposition='top left', textfont=dict(size=9, color=col),
-                        legendgroup=label, showlegend=False, hoverinfo='skip',
-                    ),
-                    row=1, col=c,
+                # Philip rate dI/dt = C₁/(2√t) + C₂ from the OLS fit
+                t_pos = t[t > 0]
+                if len(t_pos):
+                    t_fit = np.linspace(t_pos[0] / 2, t[-1], 200)
+                    q_fit = (res.ols.C1 / (2 * np.sqrt(t_fit)) + res.ols.C2) * 36_000
+                    fig.add_trace(
+                        go.Scatter(
+                            x=t_fit / 60.0, y=q_fit,
+                            mode='lines', name=f'{label} Philip',
+                            line=dict(color=col, width=1.5, dash='dash'),
+                            legendgroup=label, showlegend=False,
+                        ),
+                        row=1, col=col_rate,
+                    )
+                # Gravity asymptote C₂ and K = C₂ / A₂
+                formula = _A2_SHORT.get(res.fit_formula, res.fit_formula)
+                ann = f'C₂ = {res.ols.C2 * 36_000:.2f} mm/h'
+                ann += (f'<br>K = {res.K_ols_mmh:.2f} mm/h ({formula}), R² = {res.ols.r2:.3f}'
+                        if res.K_ols_cm_s > 0 else '<br>K n/a')
+                fig.add_hline(
+                    y=res.ols.C2 * 36_000,
+                    line_dash='dot', line_color=col,
+                    opacity=0.7, row=1, col=col_rate,
+                    annotation_text=ann,
+                    annotation_font_size=9,
+                    annotation_position='right',
                 )
 
-        if has_level:
-            fig.update_xaxes(title_text='Time [min]', row=1, col=col_of['level'])
-            fig.update_yaxes(title_text='Rate q [mm/h]', row=1, col=col_of['level'])
+        fig.update_xaxes(title_text='Time [min]', row=1, col=col_rate)
+        fig.update_yaxes(title_text='Rate q [mm/h]', row=1, col=col_rate)
         if has_volume:
-            fig.update_xaxes(title_text='√t [s^½]', row=1, col=col_of['volume'])
-            fig.update_yaxes(title_text='Cumulative I [mm]', row=1, col=col_of['volume'])
+            # Philip rate → ∞ at t → 0; cap the axis at the measured range
+            q_max = max(
+                [float(np.nanmax(r.rate_cm_s)) * 36_000 * 1.2
+                 for r in sorted_res if r.rate_cm_s is not None and len(r.rate_cm_s)]
+                + [float(np.nanmax(np.diff(r.I_cm_obs) / np.diff(r.time_s))) * 36_000 * 1.2
+                   for r in sorted_res if r.signal_type == 'volume'
+                   and r.I_cm_obs is not None and np.all(np.diff(r.time_s) > 0)]
+            )
+            fig.update_yaxes(range=[0, q_max], row=1, col=col_rate)
 
         # ── Panel B ────────────────────────────────────────────────────────
         if self.kh is not None and self.kh.h_plot is not None:
