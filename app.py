@@ -487,16 +487,25 @@ with st.sidebar:
         value=float(preset_base['disk_radius_mm']),
         min_value=1.0, step=0.5,
     )
-    signal_type = st.selectbox(
-        'Signal type',
-        ['level', 'volume'],
-        index=0 if preset_base.get('signal_type') == 'level' else 1,
-    )
+    # signal_type selects the evaluation: 'level' → hood (Wooding steady state),
+    # 'volume' → mini-disk (Philip transient). Fixed by the device preset.
+    signal_type = preset_base['signal_type']
+    if instr_key == 'Custom':
+        evaluation = st.radio(
+            'Evaluation',
+            ['Mini-disk (Philip, transient)', 'Hood (Wooding, steady state)'],
+            help='Mini-disk: reading = volume in the Mariotte tube. '
+                 'Hood: reading = water level in the supply reservoir.',
+        )
+        signal_type = 'level' if evaluation.startswith('Hood') else 'volume'
+
     # Mini-disk read as a water level in the tube → mL via tube cross-section
     signal_factor = 1.0
     if signal_type == 'volume':
         md_reading = st.radio('Mini-disk reading',
-                              ['Volume [mL]', 'Water level in tube'], horizontal=True)
+                              ['Volume [mL]', 'Water level in tube'], horizontal=True,
+                              help='What you wrote down in the field: the mL scale, '
+                                   'or a water level that is converted via the tube cross-section.')
         if md_reading == 'Water level in tube':
             lc1, lc2 = st.columns(2)
             tube_area_cm2 = lc1.number_input(
@@ -523,6 +532,7 @@ with st.sidebar:
             'Reservoir cross-section [cm²]',
             value=float(preset_base.get('reservoir_area_cm2', 23.0)),
             min_value=0.1, step=0.1,
+            help='Hood reading = water level [mm] in the supply reservoir.',
         )
 
     st.divider()
@@ -551,6 +561,16 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 st.title('💧 InFilt — Tension Infiltrometer Analysis')
+st.caption(
+    'Workflow: set instrument, soil and site in the **sidebar** → load data in **Data Input** '
+    '→ verify in **Data Check** → evaluate in **Results & Report** → compare saved runs in '
+    '**History**. Sidebar settings apply live to all loaded data.'
+)
+
+
+def _intro(what: str, why: str, how: str) -> None:
+    """Short 'what / why / how' brief at the top of a tab."""
+    st.info(f'**What:** {what}  \n**Why:** {why}  \n**How:** {how}')
 
 tab_input, tab_check, tab_results, tab_history, tab_methods = st.tabs(
     ['📋  Data Input', '🔍  Data Check', '📊  Results & Report', '📁  History', '📖  Methods']
@@ -579,10 +599,13 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_input:
-    st.markdown(
-        '**Expected columns:** `suction` [mmWC] · `time` [s] · `signal` '
-        '(level [mm] for hood, volume [mL] for mini-disk).  '
-        'Multiple tensions in one table (long format). Column names are flexible.'
+    _intro(
+        'Reads raw field readings (time and reservoir reading per suction step) into the app.',
+        'All later steps work on one tidy table: site · suction · time · reading.',
+        '**Upload file** or **Copy-paste** for one site in long format — columns `suction` '
+        '[mm], `time` [s or HH:MM:SS], `signal` (hood: level [mm]; mini-disk: mL or tube '
+        'level, see sidebar); then map the columns. **File with multiple Raw Data** for the '
+        'wide field sheet with many sites; then click *Load ALL runs*.',
     )
 
     input_mode = st.radio(
@@ -733,12 +756,12 @@ with tab_input:
 with tab_check:
     import plotly.graph_objects as go
 
-    st.markdown(
-        'This shows exactly what has been loaded into the analysis for each '
-        'site/tension — after column mapping, time parsing, level→volume '
-        'conversion and suction offset have been applied. Use it to spot-check '
-        'that nothing was mis-read before running the analysis, and exclude '
-        'runs that should not enter the K(h) fits.'
+    _intro(
+        'Shows exactly what enters the analysis per site and suction — after time parsing, '
+        'level → mL conversion and suction offset.',
+        'Typos, wrong units or disturbed runs bias K; catch them before evaluating.',
+        'Pick site and suction, check table and curve (reading should fall steadily). '
+        'Put bad runs into **Exclude runs**, then (re-)run the analysis.',
     )
 
     frames = []
@@ -832,6 +855,15 @@ with tab_check:
 with tab_results:
     import plotly.graph_objects as go
     import plotly.express as px
+
+    _intro(
+        'Computes K(h₀) per suction (hood: Wooding from steady-state flux; mini-disk: Philip '
+        'fit + Zhang/Dohnal A₂), fits K(h) models and estimates Ksat.',
+        'K near saturation characterises macropore and matrix flow; Ksat is the h = 0 limit.',
+        'Click **Run / Analyse ALL**, read the table and figure, check the ⚠ flags '
+        '(e.g. `LOW_R2`, `FEW_PTS`, `NEGATIVE_K`), then download the PDF or **save** to the '
+        'log. See the **Methods** tab for equations.',
+    )
 
     has_single = 'df_tidy' in st.session_state
     has_multi  = 'multi_df_tidy' in st.session_state
@@ -1121,6 +1153,12 @@ with tab_history:
     import plotly.graph_objects as go
     import plotly.express as px
 
+    _intro(
+        f'Shows all runs saved to `{RESULTS_FILE.name}`.',
+        'Compare sites, tensions and campaigns over time.',
+        'Choose one site for detailed charts or *All sites* for cross-site comparison; '
+        'download the table as CSV. Saving the same run twice adds duplicate rows.',
+    )
     st.subheader('Results Log')
 
     if not RESULTS_FILE.exists():
@@ -1350,6 +1388,11 @@ with tab_history:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_methods:
+    _intro(
+        'Equations, assumptions and references used by the evaluation.',
+        'To judge and cite the results correctly.',
+        'Read before interpreting K; the same text is included in the PDF report.',
+    )
     st.markdown(methods_markdown())
     st.divider()
     st.caption(FOOTER)
